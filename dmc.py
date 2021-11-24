@@ -7,6 +7,7 @@ from dm_control import manipulation, suite
 from dm_control.suite.wrappers import action_scale, pixels
 from dm_env import StepType, specs
 
+import custom_dmc_tasks as cdmc
 
 class ExtendedTimeStep(NamedTuple):
     step_type: Any
@@ -15,6 +16,8 @@ class ExtendedTimeStep(NamedTuple):
     observation: Any
     next_observation: Any
     action: Any
+    state: Any = None
+    next_state: Any = None
 
     def first(self):
         return self.step_type == StepType.FIRST
@@ -231,21 +234,68 @@ class ObservationDTypeWrapper(dm_env.Environment):
         return getattr(self._env, name)
 
 
+class MixedPixelStateWrapper(FrameStackWrapper):
+    def __init__(self, env, num_frames, state_dtype):
+        super().__init__(env, num_frames)
+        self._env = env
+        self._dtype = state_dtype
+
+    # def _transform_observation(self, time_step):
+    #     obs = time_step.observation['observations'].astype(self._dtype)
+    #     return time_step._replace(observation=obs)
+
+    def _transform_observation(self, time_step):
+        assert len(self._frames) == self._num_frames
+        obs = np.concatenate(list(self._frames), axis=0)
+        time_step.observation[self._pixels_key] = obs
+        time_step.observation['observations'] = time_step.observation['observations'].astype(self._dtype)
+        return time_step
+
+    def _extract_pixels(self, time_step):
+        pixels = time_step.observation[self._pixels_key]
+        # remove batch dim
+        if len(pixels.shape) == 4:
+            pixels = pixels[0]
+        return pixels.transpose(2, 0, 1).copy()
+
+    def reset(self):
+        time_step = self._env.reset()
+        pixels = self._extract_pixels(time_step)
+        for _ in range(self._num_frames):
+            self._frames.append(pixels)
+        return self._transform_observation(time_step)
+
+    def step(self, action):
+        time_step = self._env.step(action)
+        pixels = self._extract_pixels(time_step)
+        self._frames.append(pixels)
+        return self._transform_observation(time_step)
+        
+
 class ExtendedTimeStepWrapper(dm_env.Environment):
     def __init__(self, env):
         self._env = env
         self._prev_observation = None
+        self._prev_state = None
+
+    def _update_prev(self, time_step):
+        if isinstance(time_step.observation, dict):
+            self._prev_observation = time_step.observation['pixels']
+            self._prev_state = time_step.observation['observations']
+        else:
+            self._prev_observation = time_step.observation
 
     def reset(self):
         time_step = self._env.reset()
-        self._prev_observation = time_step.observation
+        self._update_prev(time_step)
         return self._augment_time_step(time_step)
 
     def step(self, action):
         time_step = self._env.step(action)
-        time_step = self._augment_time_step(time_step, action)
-        self._prev_observation = time_step.next_observation
-        return time_step
+        ext_time_step = self._augment_time_step(time_step, action)
+        # TODO: does timestep have next_observation?
+        self._update_prev(time_step)
+        return ext_time_step
 
     def _augment_time_step(self, time_step, action=None):
         if action is None:
@@ -257,13 +307,24 @@ class ExtendedTimeStepWrapper(dm_env.Environment):
                 return default
             return value
 
-        return ExtendedTimeStep(observation=self._prev_observation,
+        if isinstance(time_step.observation, dict):
+            return ExtendedTimeStep(observation=self._prev_observation,
+                                    next_observation=time_step.observation['pixels'],
+                                    state=self._prev_state,
+                                    next_state=time_step.observation['observations'],
+                                    step_type=time_step.step_type,
+                                    action=action,
+                                    reward=default_on_none(time_step.reward, 0.0),
+                                    discount=default_on_none(
+                                    time_step.discount, 1.0))
+        
+        return  ExtendedTimeStep(observation=self._prev_observation,
                                 next_observation=time_step.observation,
                                 step_type=time_step.step_type,
                                 action=action,
                                 reward=default_on_none(time_step.reward, 0.0),
                                 discount=default_on_none(
-                                    time_step.discount, 1.0))
+                                time_step.discount, 1.0))
 
     def specs(self):
         obs_spec = self._env.observation_spec()
@@ -299,28 +360,42 @@ def _make_jaco(obs_type, domain, task, frame_stack, action_repeat, seed):
 
 
 def _make_dmc(obs_type, domain, task, frame_stack, action_repeat, seed):
+    # visualize_reward = False
+    # assert (domain, task) in suite.ALL_TASKS
+    # env = suite.load(domain,
+    #                  task,
+    #                  task_kwargs=dict(random=seed),
+    #                  environment_kwargs=dict(flat_observation=True),
+    #                  visualize_reward=visualize_reward)
     visualize_reward = False
-    assert (domain, task) in suite.ALL_TASKS
-    env = suite.load(domain,
-                     task,
-                     task_kwargs=dict(random=seed),
-                     environment_kwargs=dict(flat_observation=True),
-                     visualize_reward=visualize_reward)
+    if (domain, task) in suite.ALL_TASKS:
+        env = suite.load(domain,
+                         task,
+                         task_kwargs=dict(random=seed),
+                         environment_kwargs=dict(flat_observation=True),
+                         visualize_reward=visualize_reward)
+    else:
+        env = cdmc.make(domain,
+                        task,
+                        task_kwargs=dict(random=seed),
+                        environment_kwargs=dict(flat_observation=True),
+                        visualize_reward=visualize_reward)
 
     env = ActionDTypeWrapper(env, np.float32)
     env = ActionRepeatWrapper(env, action_repeat)
-    if obs_type == 'pixels':
+    if obs_type in ['pixels', 'both']:
         # zoom in camera for quadruped
         camera_id = dict(quadruped=2).get(domain, 0)
         render_kwargs = dict(height=84, width=84, camera_id=camera_id)
         env = pixels.Wrapper(env,
-                             pixels_only=True,
+                             pixels_only=False,
                              render_kwargs=render_kwargs)
     return env
 
 
 def make(name, seed, obs_type='states', frame_stack=1, action_repeat=1):
-    assert obs_type in ['states', 'pixels']
+    assert obs_type in ['states', 'pixels', 'both']
+    # in case of both, observation key word is pixel and state key is the state
     domain, task = name.split('_', 1)
     domain = dict(cup='ball_in_cup').get(domain, domain)
 
@@ -331,6 +406,8 @@ def make(name, seed, obs_type='states', frame_stack=1, action_repeat=1):
 
     if obs_type == 'pixels':
         env = FrameStackWrapper(env, frame_stack)
+    elif obs_type == 'both':
+        env = MixedPixelStateWrapper(env, frame_stack, np.float32)
     else:
         env = ObservationDTypeWrapper(env, np.float32)
 

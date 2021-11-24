@@ -4,15 +4,16 @@ import numpy as np
 
 
 class VideoRecorder:
-    def __init__(self, root_dir, render_size=256, fps=20):
+    def __init__(self, root_dir, render_size=256, camera_id=0, fps=20):
         if root_dir is not None:
             self.save_dir = root_dir / 'eval_video'
-            self.save_dir.mkdir(exist_ok=True)
+            self.save_dir.mkdir(exist_ok=True, parents=True)
         else:
             self.save_dir = None
 
         self.render_size = render_size
         self.fps = fps
+        self.camera_id = camera_id
         self.frames = []
 
     def init(self, env, enabled=True):
@@ -25,7 +26,7 @@ class VideoRecorder:
             if hasattr(env, 'physics'):
                 frame = env.physics.render(height=self.render_size,
                                            width=self.render_size,
-                                           camera_id=0)
+                                           camera_id=self.camera_id)
             else:
                 frame = env.render()
             self.frames.append(frame)

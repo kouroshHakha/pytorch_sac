@@ -1,5 +1,7 @@
 import warnings
 
+from snapshot import load_snapshot
+
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 import os
@@ -16,8 +18,11 @@ import dmc, utils
 from logger import Logger
 from replay_buffer3 import ReplayBuffer
 from video import VideoRecorder
+from snapshot import load_snapshot, save_snapshot
 
 torch.backends.cudnn.benchmark = True
+
+snapshot_steps = [1, 100000, 250000, 500000, 1000000, 1500000, 2000000]
 
 
 @hydra.main(config_path='.', config_name='config')
@@ -50,7 +55,7 @@ def main(cfg):
     #                                        cfg.discount)
     replay_iter = None
 
-    video = VideoRecorder(work_dir if cfg.save_video else None)
+    video = VideoRecorder(work_dir if cfg.save_video else None, camera_id=2 if cfg.task.startswith('quadruped') else 0)
 
     agent = hydra.utils.instantiate(
         cfg.agent,
@@ -97,6 +102,9 @@ def main(cfg):
 
             time_step = train_env.reset()
             episode_step, episode_return = 0, 0
+
+        if step + 1 in snapshot_steps:
+            save_snapshot(agent, step + 1, logger._log_dir)
 
         if step % cfg.eval_every_steps == 0:
             eval(step, episode)

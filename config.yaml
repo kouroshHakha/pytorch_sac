@@ -6,7 +6,7 @@ defaults:
 task: cheetah_run
 discount: 0.99
 # train settings
-num_train_steps: 1000000
+num_train_steps: 2000000
 num_seed_steps: 4000
 # eval
 eval_every_steps: 20000

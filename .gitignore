@@ -8,3 +8,7 @@ cancel_sweep.py
 check_sweep.py
 run_*.py
 dmc_benchmarks.py
+
+*.gif
+lightning_logs
+agent_runs
