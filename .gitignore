@@ -11,4 +11,5 @@ dmc_benchmarks.py
 
 *.gif
 lightning_logs
+tb_logs
 agent_runs

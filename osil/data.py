@@ -1,6 +1,7 @@
 
 from pathlib import Path
 import pickle
+import numpy as np
 
 import torch
 from torch.utils.data import Dataset
@@ -10,7 +11,6 @@ class DMC(Dataset):
     def __init__(self, task_name='walker_stand', obs_type='state', block_size=64, num_trajs=100):
 
         assert obs_type in ['states', 'pixels']
-
         
         self.block_size = block_size
 
@@ -43,3 +43,21 @@ class DMC(Dataset):
     def normalize_returns(self, returns):
         max_return = self.reward.sum((-1, -2))[:self.num_trajs].max()
         return returns / max_return
+
+class Concat(Dataset):
+    def __init__(self, datasets):
+        self.datasets = datasets
+        self.lengths = [len(d) for d in datasets]
+        self.offsets = np.cumsum(self.lengths)
+        self.length = np.sum(self.lengths)
+
+    def __getitem__(self, index):
+        for i, offset in enumerate(self.offsets):
+            if index < offset:
+                if i > 0:
+                    index -= self.offsets[i-1]
+                return self.datasets[i][index]
+        raise IndexError(f'{index} exceeds {self.length}')
+
+    def __len__(self):
+        return self.length

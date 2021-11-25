@@ -12,20 +12,34 @@ class Encoder(nn.Module):
         super().__init__()
 
         assert len(obs_shape) == 3
-        self.repr_dim = 32 * 35 * 35
+        # self.repr_dim = 1 * 35 * 35
+        # self.repr_dim = h_dim
+
+        # self.convnet = nn.Sequential(
+        #     nn.Conv2d(obs_shape[0], 32, 3, stride=2),
+        #     nn.ReLU(), 
+        #     nn.Conv2d(32, 32, 3, stride=1),
+        #     nn.ReLU(), 
+        #     nn.Conv2d(32, 32, 3, stride=1),
+        #     nn.ReLU(), 
+        #     nn.Conv2d(32, 1, 3, stride=1),
+        #     nn.ReLU()
+        # )
 
         self.convnet = nn.Sequential(
-            nn.Conv2d(obs_shape[0], 32, 3, stride=2),
+            nn.Conv2d(obs_shape[0], 32, 8, stride=4),
+            nn.ReLU(), 
+            nn.Conv2d(32, 32, 4, stride=2),
             nn.ReLU(), 
             nn.Conv2d(32, 32, 3, stride=1),
             nn.ReLU(), 
             nn.Conv2d(32, 32, 3, stride=1),
-            nn.ReLU(), 
-            nn.Conv2d(32, 32, 3, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(32, h_dim, 5, stride=1),
             nn.ReLU()
         )
-
-        self.lin = nn.Linear(self.repr_dim, h_dim, bias=True)
+        
+        # self.lin = nn.Linear(self.repr_dim, h_dim, bias=True)
 
         self.apply(utils.weight_init)
 
@@ -33,7 +47,6 @@ class Encoder(nn.Module):
         obs = obs / 255.0 - 0.5
         h = self.convnet(obs)
         h = h.view(h.shape[0], -1)
-        h = self.lin(h)
         return h
 
 

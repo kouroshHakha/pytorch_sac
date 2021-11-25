@@ -17,6 +17,7 @@ import dmc, utils
 from video import VideoRecorder
 
 import yaml
+import time
 
             
 def evaluate(agent, cfg, output_dir=''):
@@ -30,10 +31,17 @@ def evaluate(agent, cfg, output_dir=''):
 
     def eval_step(time_step):
         with torch.no_grad(), utils.eval_mode(agent):
+            # s = time.time()
             obs = torch.from_numpy(time_step.observation).float().to(agent.device)
             obs = obs.unsqueeze(0)
+            # move_time = time.time() - s
+            # s = time.time()
             action = agent(obs)[0]
+            # ff_time = time.time() - s
+            # s = time.time()
             time_step = env.step(action.detach().cpu().numpy())
+            # env_time = time.time() - s
+            # print(f'move_time = {move_time:10.4f}, ff_time = {ff_time:10.4f}, env_time = {env_time:10.4f}')
             return time_step
 
     returns = []
@@ -42,7 +50,6 @@ def evaluate(agent, cfg, output_dir=''):
         time_step = env.reset()
         ep_rews = []
         video.init(env, enabled=True)
-
         while not time_step.last():
             video.record(env)
             time_step = eval_step(time_step)
