@@ -106,3 +106,41 @@ class GCDMC(Dataset):
     def normalize_returns(self, returns):
         max_return = self.reward.sum((-1, -2))[:self.num_trajs].max()
         return returns / max_return
+
+class GCPM(Dataset):
+
+    def __init__(self, name='maze2d-open-v0', block_size=64):
+        import d4rl; import gym
+            
+        self.block_size = block_size
+        
+        env = gym.make(name)
+        self.data = env.get_dataset()
+        self.obses = self.data['observations']
+
+        self.acs = self.data['actions']
+
+    def __len__(self):
+        return len(self.obses) - self.block_size*2 - 1000
+        
+    def __getitem__(self, idx):
+        # grab a chunk of (block_size + 1) characters from the data
+        obses = self.obses[idx:idx + self.block_size]
+        acs = self.acs[idx:idx + self.block_size]
+        
+        # x, y location of some future state that is at least 24 and at most 64 steps away from the last state in the current trajectory
+        # rand_id = np.random.randint(low=24, high=64)
+        rand_id = 0
+        goal = self.obses[idx + self.block_size + rand_id: idx + self.block_size + rand_id + 1, :2]
+        
+        
+        x = torch.tensor(obses, dtype=torch.float)
+        goal = torch.tensor(goal, dtype=torch.float).squeeze(0)
+        y = torch.tensor(acs, dtype=torch.float)
+
+        # T = obses.shape[0]
+        # goal = goal.repeat(T, 1)
+        # x = torch.cat([x, goal], -1)
+        
+        # output: x (B, T, s_dim), goal (B, g_dim), y (B, T, a_dim)
+        return x, goal, y
