@@ -59,23 +59,13 @@ class BC(pl.LightningModule):
         self.save_hyperparameters(conf)
         conf = utils.ParamDict(conf)
         self.conf = conf
-        self.h_dim = h_dim = conf.hidden_dim
-        self.obs_shape = obs_shape = conf.obs_shape
-        self.ac_dim = ac_dim = conf.ac_dim
+        self.h_dim = conf.hidden_dim
+        self.obs_shape = conf.obs_shape
+        self.ac_dim = conf.ac_dim
         
         self.emb = None
-        if len(obs_shape) > 1:
-            self.emb = Encoder(obs_shape, h_dim)
 
-        self.mlp = nn.Sequential(nn.Linear(h_dim if self.emb else obs_shape[0], h_dim),
-                                 nn.ReLU(),
-                                 nn.Linear(h_dim, h_dim),
-                                 nn.ReLU(),
-                                 nn.Linear(h_dim, h_dim),
-                                 nn.ReLU(),
-                                 nn.Linear(h_dim, ac_dim)
-                                )
-                
+        self._build_network()                
         self.apply(utils.weight_init)
         
     def forward(self, x):
@@ -83,6 +73,24 @@ class BC(pl.LightningModule):
             x = self.emb(x)
         pred_ac = self.mlp(x)
         return pred_ac
+
+    def _build_network(self):
+        obs_shape = self.obs_shape
+        h_dim = self.h_dim
+        ac_dim = self.ac_dim
+
+        if len(obs_shape) > 1:
+            self.emb = Encoder(obs_shape, h_dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(h_dim if self.emb else obs_shape[0], h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, ac_dim)
+        )
     
     def bc_loss(self, pred_ac, target_ac):
      
@@ -112,3 +120,46 @@ class BC(pl.LightningModule):
     def training_epoch_end(self, outputs) -> None:
         losses = torch.stack([item['loss'] for item in outputs], 0)
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
+
+
+class GCBC(BC):
+
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    
+    def _build_network(self):
+        obs_shape = self.obs_shape
+        h_dim = self.h_dim
+        ac_dim = self.ac_dim
+
+        if len(obs_shape) > 1:
+            self.emb = Encoder(obs_shape, h_dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(2*h_dim if self.emb else 2*obs_shape[0], h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, ac_dim)
+        )
+    
+    def ff(self, batch):
+        obs, goal, act = batch
+        obs = obs.squeeze(1)
+        act = act.squeeze(1)
+        goal = goal.squeeze(1)
+
+        pred_ac = self(obs, goal)
+        loss = self.bc_loss(pred_ac, act)
+        return loss, pred_ac
+
+    def forward(self, x, g):
+        if self.emb:
+            x = self.emb(x)
+            g = self.emb(g)
+        mlp_in = torch.cat([x,g], -1)
+        pred_ac = self.mlp(mlp_in)
+        return pred_ac
