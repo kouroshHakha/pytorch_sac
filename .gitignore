@@ -6,7 +6,7 @@ exp_local
 nbs
 cancel_sweep.py
 check_sweep.py
-run_*.py
+# run_*.py
 dmc_benchmarks.py
 
 *.gif
