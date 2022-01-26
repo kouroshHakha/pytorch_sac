@@ -1,4 +1,6 @@
 
+
+import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from pathlib import Path
@@ -9,8 +11,8 @@ print(f'Workspace: {Path.cwd()}')
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 
-from osil.data import GCPM
-from osil.nets import GCDTLightningModule
+from osil.data import OsilPM
+from osil.nets import TraphormerLightningModule
 from osil.utils import ParamDict
 
 from osil.debug import register_pdb_hook
@@ -27,7 +29,9 @@ def _parse_args():
     # parser.add_argument('--lr', '-lr', default=1e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', default=1, type=int)
-    parser.add_argument('--block_size', default=64, type=int)
+    parser.add_argument('--ctx_size', default=256, type=int)
+    parser.add_argument('--trg_size', default=64, type=int)
+    parser.add_argument('--mask_rate', default=0.75, type=float)
     # parser.add_argument('--use_wandb', '-wb', action='store_true') # not setup right now
     # parser.add_argument('--ckpt', type=str)
     # parser.add_argument('--resume', action='store_true')
@@ -38,24 +42,31 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'gct_pm'
+    exp_name = f'osil_pm'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
 
-    dataset = GCPM(block_size=pargs.block_size)
+    dataset = OsilPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size)
     tloader = DataLoader(dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0)
-    obs, goal, act = dataset[0]
+    c_s, c_a, t_s, t_a = dataset[0]
 
     # # plot some example datasets
-    # _, axes = plt.subplots(3, 4)
+    # _, axes = plt.subplots(3, 4, figsize=(15, 8))
     # axes = axes.flatten()
     #
-    # states, goals, acts = next(iter(tloader))
+    # batched_c_s, batched_c_a, batched_t_s, batched_t_a = next(iter(tloader))
+    # masks = (np.random.rand(*batched_c_s.shape[:2]) > pargs.mask_rate)
+    # masks[:, 0] = True
+    # masks[:, -1] = True
+    #
     # for i in range(12):
-    #     axes[i].plot(states[i, :, 0], states[i, :, 1], color='b', linestyle='--')
-    #     axes[i].scatter([goals[i, 0].item()], [goals[i, 1].item()], marker='*', color='green')
-    #     axes[i].scatter(states[i, 0, 0], states[i, 0, 1], marker='.', color='r')
-    #     axes[i].scatter(states[i, -1, 0], states[i, -1, 1], marker='.', color='g')
+    #     mask = masks[i]
+    #     axes[i].plot(batched_t_s[i, :, 0], batched_t_s[i, :, 1], color='b', linestyle='-', linewidth=3.5)
+    #     axes[i].plot(batched_c_s[i, :, 0], batched_c_s[i, :, 1], color='b', linestyle='-')
+    #     axes[i].scatter(batched_c_s[i, mask, 0], batched_c_s[i, mask, 1], marker='.', color='k', s=25)
+    #     # axes[i].scatter([goals[i, 0].item()], [goals[i, 1].item()], marker='*', color='green')
+    #     axes[i].scatter(batched_c_s[i, 0, 0], batched_c_s[i, 0, 1], marker='*', color='r', s=100)
+    #     axes[i].scatter(batched_c_s[i, -1, 0], batched_c_s[i, -1, 1], marker='*', color='g', s=100)
     #
     # plt.tight_layout()
     # plt.show()
@@ -63,13 +74,14 @@ def main(pargs):
     config = ParamDict(
         hidden_dim=pargs.hidden_dim,
         max_ep_len=1024,
-        obs_shape=obs.shape[1:],
-        ac_dim=act.shape[-1],
-        goal_dim=goal.shape[-1],
+        obs_shape=t_s.shape[1:],
+        ac_dim=t_a.shape[-1],
         loss_type='only_action',
+        mask_rate=pargs.mask_rate,
         lr=1e-4,
     )
-    agent = GCDTLightningModule(config)
+
+    agent = TraphormerLightningModule(config)
 
     ######## check model's input to output dependency
     # import torch

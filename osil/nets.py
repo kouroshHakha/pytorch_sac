@@ -1,3 +1,4 @@
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -172,11 +173,10 @@ import transformers
 from decision_transformer.models.trajectory_gpt2 import GPT2Model
 import einops
 
-class GCDT(pl.LightningModule):
+class GCDT(nn.Module):
     def __init__(self, conf):
         super().__init__()
 
-        self.save_hyperparameters(conf)
         conf = utils.ParamDict(conf)
         self.conf = conf
         self.h_dim = conf.hidden_dim
@@ -276,9 +276,6 @@ class GCDT(pl.LightningModule):
 
         return loss
 
-    def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr)
-
     def ff(self, batch):
         """ compute next states and next actions """
         state, goal, act = batch
@@ -290,6 +287,21 @@ class GCDT(pl.LightningModule):
 
         return loss, pred_ac, pred_ns
 
+    def get_action(self, state_ctx, action_ctx, goal):
+        # helper function for running the DT
+        state_embs, _ = self(state_ctx, action_ctx, goal)
+        pred_ac = self.decode_next_action(state_embs)
+        return pred_ac
+
+class GCDTLightningModule(GCDT, pl.LightningModule):
+
+    def __init__(self, conf):
+        super().__init__(conf)
+        self.save_hyperparameters(conf)
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr)
+
     def training_step(self, batch):
         loss, _, _ = self.ff(batch[0])
         self.log('train_loss_batch', loss)
@@ -299,8 +311,144 @@ class GCDT(pl.LightningModule):
         losses = torch.stack([item['loss'] for item in outputs], 0)
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
 
-    def get_action(self, state_ctx, action_ctx, goal):
-        # helper function for running the DT
-        state_embs, _ = self(state_ctx, action_ctx, goal)
-        pred_ac = self.decode_next_action(state_embs)
-        return pred_ac
+########################################################
+################### Trajectory BERT  ###################
+########################################################
+from decision_transformer.models.trajectory_bert import BertModel
+
+
+class TrajBERT(nn.Module):
+
+    def __init__(self, conf):
+        super().__init__()
+
+        conf = utils.ParamDict(conf)
+        self.conf = conf
+        self.h_dim = conf.hidden_dim
+        self.obs_shape = conf.obs_shape
+        self.ac_dim = conf.ac_dim
+
+        self.emb_timestep = None
+        self.emb_state, self.emb_action = None, None
+        self.cls_token: Optional[nn.Parameter] = None
+        self.transformer: Optional[BertModel] = None
+        self._build_network()
+
+    def _build_network(self):
+        """ builds emb_state, emb_action, emb_timestep, transformer networks """
+        self.emb_timestep = nn.Embedding(self.conf.max_ep_len, self.conf.hidden_dim)
+
+        obs_shape = self.obs_shape
+        h_dim = self.h_dim
+        ac_dim = self.ac_dim
+
+        if len(obs_shape) != 1:
+            raise ValueError('obs_shape should have one dimension.')
+
+        self.emb_state = nn.Linear(obs_shape[0], h_dim)
+        self.emb_action = nn.Linear(ac_dim, h_dim)
+        self.cls_token = nn.Parameter(torch.randn(h_dim), requires_grad=True)
+
+        bert_config = transformers.BertConfig(
+            vocab_size=1,
+            hidden_size=h_dim,
+            num_hidden_layers=3,
+            num_attention_heads=4,
+            intermediate_size=4*h_dim,
+            max_position_embeddings=self.conf.max_ep_len,
+        )
+
+        self.transformer = BertModel(bert_config)
+
+
+    def forward(self, states, actions, masks):
+        # states: B, T, d_s
+        # actions: B, T, d_a
+        # masks: B, T (make sure it always includes first and last timesteps)
+
+        B, T, _ = states.size()
+        timesteps = torch.arange(T).to(device=states.device, dtype=torch.long)
+
+        state_emb_in = self.emb_state(states) + self.emb_timestep(timesteps)
+        action_emb_in = self.emb_action(actions) + self.emb_timestep(timesteps)
+
+        input_tokens = einops.rearrange([state_emb_in, action_emb_in], 'i B T h -> B (T i) h')
+        mask_tokens = einops.rearrange([masks, masks], 'i B T -> B (T i)')
+
+        input_tokens = torch.cat([self.cls_token.repeat(B, 1, 1), input_tokens], dim=1)
+        mask_tokens = torch.cat([torch.ones(B, 1, dtype=torch.bool).to(mask_tokens), mask_tokens], dim=1)
+
+        tf_outputs = self.transformer(inputs_embeds=input_tokens, attention_mask=mask_tokens)
+        traj_emb = tf_outputs['pooler_output']
+
+        return traj_emb
+
+
+##################################################
+################### Traphormer ###################
+##################################################
+
+class TraphormerLightningModule(pl.LightningModule):
+
+    def __init__(self, conf):
+        super().__init__()
+        self.conf = conf
+        self.save_hyperparameters(conf)
+
+        self._build_network()
+
+    def _build_network(self):
+        enc_config = utils.ParamDict(
+            hidden_dim=self.conf.hidden_dim,
+            obs_shape=self.conf.obs_shape,
+            ac_dim=self.conf.ac_dim,
+            max_ep_len=self.conf.max_ep_len,
+        )
+        self.encoder = TrajBERT(enc_config)
+
+        dec_config = utils.ParamDict(
+            hidden_dim=self.conf.hidden_dim,
+            max_ep_len=self.conf.max_ep_len,
+            obs_shape=self.conf.obs_shape,
+            ac_dim=self.conf.ac_dim,
+            goal_dim=self.conf.hidden_dim,
+            loss_type=self.conf.loss_type,
+        )
+
+        self.decoder = GCDT(dec_config)
+
+    def _augment(self, state, action):
+        return state, action
+
+    def _get_mask(self, states):
+        B, T, _ = states.size()
+        mask_rate = self.conf.mask_rate
+        # mask p percent of the input tokens for each batch
+        # mask = 0 means no attention
+        mask = (torch.rand(B, T) > mask_rate).long()
+        # make sure the first and last timesteps are part of the input seq
+        mask[:, 0] = 1
+        mask[:, -1] = 1
+        return mask
+
+    def ff(self, batch):
+        context_s, context_a, target_s, target_a = batch
+        context_s, context_a = self._augment(context_s, context_a)
+        context_mask = self._get_mask(context_s)
+
+        task_emb = self.encoder(context_s, context_a, context_mask)
+        loss, pred_ac, pred_ns = self.decoder.ff((target_s, task_emb, target_a))
+
+        return loss, pred_ac, pred_ns
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr)
+
+    def training_step(self, batch):
+        loss, _, _ = self.ff(batch[0])
+        self.log('train_loss_batch', loss)
+        return loss
+
+    def training_epoch_end(self, outputs) -> None:
+        losses = torch.stack([item['loss'] for item in outputs], 0)
+        self.log('train_loss_epoch', losses.mean(), prog_bar=True)

@@ -138,9 +138,33 @@ class GCPM(Dataset):
         goal = torch.tensor(goal, dtype=torch.float).squeeze(0)
         y = torch.tensor(acs, dtype=torch.float)
 
-        # T = obses.shape[0]
-        # goal = goal.repeat(T, 1)
-        # x = torch.cat([x, goal], -1)
-        
         # output: x (B, T, s_dim), goal (B, g_dim), y (B, T, a_dim)
         return x, goal, y
+
+
+class OsilPM(Dataset):
+
+    def __init__(self, name='maze2d-open-v0', ctx_size=256, trg_size=64):
+        import d4rl; import gym
+
+        self.context_size = ctx_size
+        self.target_size = trg_size
+
+        env = gym.make(name)
+        self.data = env.get_dataset()
+        self.obses = self.data['observations']
+        self.acs = self.data['actions']
+
+    def __len__(self):
+        return len(self.obses) - self.context_size * 2
+
+    def __getitem__(self, idx):
+        # c_idx = slice(idx, idx + self.context_size)
+        c_s = torch.tensor(self.obses[idx: idx + self.context_size], dtype=torch.float)
+        c_a = torch.tensor(self.acs[idx: idx + self.context_size], dtype=torch.float)
+
+        t_start = np.random.randint(low=idx, high=idx + self.context_size - self.target_size)
+        t_s = torch.tensor(self.obses[t_start: t_start + self.target_size], dtype=torch.float)
+        t_a = torch.tensor(self.acs[t_start: t_start + self.target_size], dtype=torch.float)
+
+        return c_s, c_a, t_s, t_a
