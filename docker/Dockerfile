@@ -71,4 +71,3 @@ RUN cd d4rl && pip install -e . && cd ..
 COPY ./requirements.txt /tmp/dep
 RUN pip install -r requirements.txt
 
-

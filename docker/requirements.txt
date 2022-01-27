@@ -11,3 +11,5 @@ matplotlib==3.4.2
 opencv-python==4.5.3.56
 torch
 pytorch_lightning
+einops
+transformers==4.5.1
