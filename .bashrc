@@ -1,3 +1,4 @@
 
 export D4RL_SUPPRESS_IMPORT_ERROR=1
+export D4RL_DATASET_DIR=./d4rl_datasets
 export PYTHONPATH=./:$PYTHONPATH
