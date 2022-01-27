@@ -1,3 +1,14 @@
+# Update logs for osil project
+
+To run the code in docker:
+
+```bash
+cd docker
+docker build -t osil:latest .
+cd ..
+docker run -it -v $PWD:/root/projects/osil --workdir /root/projects/osil --rm  osil:latest
+```
+
 # Simple and efficient implementations of SAC and DDPG in PyTorch.
 
 This repository provides implementation of several agents for continuous control tasks from the [DeepMind Control Suite](https://github.com/deepmind/dm_control).
