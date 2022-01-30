@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.5.1-cudnn8-devel-ubuntu18.04
+FROM nvidia/cuda:11.6.0-base-ubuntu18.04
 
 # install anaconda3
 RUN apt-get update && apt-get install -y \
@@ -15,7 +15,7 @@ RUN curl -Lko /tmp/Anaconda3-2021.11-Linux-x86_64.sh https://repo.anaconda.com/a
 
 ENV PATH="/root/anaconda/bin:$PATH"
 
-# install mujoco: https://github.com/openai/mujoco-py/blob/master/Dockerfile
+## install mujoco: https://github.com/openai/mujoco-py/blob/master/Dockerfile
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-dev \
     libgl1-mesa-glx \
@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y \
     net-tools \
     xpra \
     xserver-xorg-dev \
+    gcc \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -71,3 +72,26 @@ RUN cd d4rl && pip install -e . && cd ..
 COPY ./requirements.txt /tmp/dep
 RUN pip install -r requirements.txt
 
+# uncomment to install nvidia drivers as part of the local installation
+RUN apt-get update && apt-get install -y \
+    kmod \
+    module-init-tools
+
+COPY NVIDIA-Linux-x86_64-495.29.05.run .
+RUN NVIDIA-Linux-x86_64-495.29.05.run \
+    --no-precompiled-interface \
+    --ui=none \
+    --install-libglvnd \
+    --no-kernel-module
+
+
+# uncomment to setup a new user
+#RUN chmod 775 /root
+#
+#ARG GID=1000
+#ARG UID=1000
+#ARG UNAME=kourosh
+#RUN groupadd -g ${GID} -o ${UNAME}
+#RUN useradd -m -u ${UID} -g $GID -o -s /bin/bash ${UNAME}
+#
+#USER $UNAME
