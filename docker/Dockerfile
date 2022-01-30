@@ -66,8 +66,8 @@ RUN pip install dm-control==0.0.403778684
 
 # project specific requirements
 ## d4rl had to be installed from a modified source (because of setup.py which forces dm_control to get updated to the latest version)
-COPY d4rl /tmp/dep/d4rl
-RUN cd d4rl && pip install -e . && cd ..
+COPY d4rl /root/anaconda/lib/python3.9/site-packages/.
+RUN cd /root/anaconda/lib/python3.9/site-packages/d4rl && pip install -e . && cd /tmp/dep
 
 COPY ./requirements.txt /tmp/dep
 RUN pip install -r requirements.txt
