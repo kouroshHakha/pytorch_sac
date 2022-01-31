@@ -6,6 +6,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+import d4rl; import gym
+
+
 class DMC(Dataset):
 
     def __init__(self, task_name='walker_stand', obs_type='state', block_size=64, num_trajs=100):
@@ -110,10 +113,9 @@ class GCDMC(Dataset):
 class GCPM(Dataset):
 
     def __init__(self, name='maze2d-open-v0', block_size=64):
-        import d4rl; import gym
-            
         self.block_size = block_size
         
+        self.name = name
         env = gym.make(name)
         self.data = env.get_dataset()
         self.obses = self.data['observations']
@@ -141,15 +143,17 @@ class GCPM(Dataset):
         # output: x (B, T, s_dim), goal (B, g_dim), y (B, T, a_dim)
         return x, goal, y
 
+    def get_new_env(self):
+        return gym.make(self.name)
+
 
 class OsilPM(Dataset):
 
     def __init__(self, name='maze2d-open-v0', ctx_size=256, trg_size=64):
-        import d4rl; import gym
-
         self.context_size = ctx_size
         self.target_size = trg_size
 
+        self.name = name
         env = gym.make(name)
         self.data = env.get_dataset()
         self.obses = self.data['observations']
@@ -168,3 +172,6 @@ class OsilPM(Dataset):
         t_a = torch.tensor(self.acs[t_start: t_start + self.target_size], dtype=torch.float)
 
         return c_s, c_a, t_s, t_a
+
+    def get_new_env(self):
+        return gym.make(self.name)

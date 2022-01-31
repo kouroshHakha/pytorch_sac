@@ -1,17 +1,23 @@
 
+from gc import callbacks
+import warnings
+import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from pathlib import Path
 from torch.utils.data.dataloader import DataLoader
+from torch.utils.data import Subset
 
 print(f'Workspace: {Path.cwd()}')
 
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.data import GCPM
 from osil.nets import GCDTLightningModule
 from osil.utils import ParamDict
+from osil.eval import evaluate_osil_pm
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -24,13 +30,18 @@ def _parse_args():
     # parser.add_argument('--weight_decay', '-wc', default=1e-4, type=float)
     parser.add_argument('--hidden_dim', '-hd', default=128, type=int)
     parser.add_argument('--batch_size', '-bs', default=128, type=int)
+    parser.add_argument('--val_dsize', '-vs', default=128, type=int)
     # parser.add_argument('--lr', '-lr', default=1e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', default=1, type=int)
     parser.add_argument('--block_size', default=64, type=int)
-    # parser.add_argument('--use_wandb', '-wb', action='store_true') # not setup right now
-    # parser.add_argument('--ckpt', type=str)
-    # parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--ckpt', type=str)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--eval_path', type=str)
+    
+    parser.add_argument('--use_wandb', '-wb', action='store_true') # not setup right now
+    parser.add_argument('--wandb_id', type=str, help='Wandb id to allow for resuming')
+    parser.add_argument('--run_name', type=str, default=None, help='Wandb run name, if not provided the deafult of wandb is used')
     # parser.add_argument('--num_eval_episodes', default=10, type=int)
     # parser.add_argument('--num_trajs', '-ntraj', default=100, type=int)
 
@@ -43,7 +54,10 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
 
     dataset = GCPM(block_size=pargs.block_size)
+    valid_dataset = Subset(GCPM(block_size=pargs.block_size), indices=np.arange(pargs.val_dsize))
+    
     tloader = DataLoader(dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0)
     obs, goal, act = dataset[0]
 
     # # plot some example datasets
@@ -69,7 +83,6 @@ def main(pargs):
         loss_type='only_action',
         lr=1e-4,
     )
-    agent = GCDTLightningModule(config)
 
     ######## check model's input to output dependency
     # import torch
@@ -78,25 +91,63 @@ def main(pargs):
     # attn = outputs['attentions'][0][0,0].detach().numpy()
     # plt.imshow(attn)
     # plt.show()
+    args_var = vars(pargs)
+    ckpt = args_var.get('ckpt', '')
+    resume = args_var.get('resume', False)
+    
+    agent = GCDTLightningModule.load_from_checkpoint(ckpt) if ckpt else GCDTLightningModule(config)
+    agent = agent.to(device=pargs.device)
 
-    # ckpt = bc_config.pop('ckpt', '')
-    # resume = bc_config.pop('resume', False)
-    # bc_config.update(obs_shape=obs.shape[1:], ac_dim=act.shape[-1])
-    #
-    # agent = BC.load_from_checkpoint(ckpt) if ckpt else BC(bc_config)
-    logger = TensorBoardLogger(save_dir='tb_logs', name=exp_name)
+    if pargs.use_wandb:
+        import wandb
+        run_name = exp_name if not pargs.run_name else f'{exp_name}_{pargs.run_name}'
+        wandb_run = wandb.init(
+            project='osil',
+            name=run_name,
+            dir='./wandb_logs',
+            id=pargs.wandb_id,
+            resume='allow',
+            config=dict(seed=pargs.seed),
+        )
+        logger = WandbLogger(experiment=wandb_run, save_dir='./wandb_logs')
+    else:
+        logger = TensorBoardLogger(save_dir='tb_logs', name=exp_name)
+
+    ckpt_callback = ModelCheckpoint(
+                monitor='valid_loss',
+                filename='cgl-{step}-{valid_loss_epoch:.4f}-{epoch:02d}',
+                save_last=True,
+                save_on_train_epoch_end=True,
+                mode='min',
+            )
+
     trainer = pl.Trainer(
         max_epochs=pargs.max_epochs,
-        # resume_from_checkpoint=ckpt if resume else None,
+        resume_from_checkpoint=ckpt if resume else None,
         logger=logger,
         gpus=1 if pargs.device == 'cuda' else 0,
+        val_check_interval=500, # check val set every x steps
+        callbacks=[ckpt_callback],
     )
 
-    # eval_output_dir = ''
-    # train = (ckpt and resume) or not ckpt
-    # if train:
-    trainer.fit(agent, train_dataloaders=[tloader])
-    # eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+    eval_output_dir = ''
+    train = (ckpt and resume) or not ckpt
+    if train:
+        trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
+        eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+    else:
+        eval_output_dir = pargs.eval_path
+        if ckpt and not pargs.eval_path:
+            eval_output_dir = str(Path(ckpt).parent.resolve())
+            warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
+    
+    print('Evaluating the agent ...')
+    pl.seed_everything(0)
+    # test dataset uses twice the block size at the moment to not introduce 
+    # any confounding factor fro early timesteps in the epiode that we want to imitate. 
+    test_dataset = GCPM(block_size=2*pargs.block_size)
+    evaluate_osil_pm(agent, test_dataset, eval_output_dir=eval_output_dir, render_examples=True)
+    print('Evaluating the agent is done.')
 
 
 if __name__ == '__main__':

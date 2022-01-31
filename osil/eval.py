@@ -1,5 +1,5 @@
-from collections import defaultdict
 
+import matplotlib.pyplot as plt
 import os
 import tqdm 
 from time import sleep
@@ -115,3 +115,51 @@ class EvaluatorGC(Evaluator):
             # print(f'move_time = {move_time:10.4f}, ff_time = {ff_time:10.4f}, env_time = {env_time:10.4f}')
             return time_step
 
+
+
+def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=True):
+    T = 16
+    plot_path = Path(eval_output_dir) / 'examples.png'
+    examples = []
+    for _ in range(T):
+        env = test_dataset.get_new_env()
+        idx = np.random.randint(len(test_dataset))
+        batch_item = test_dataset[idx]
+        output = agent.imitate(env, batch_item)
+        examples.append({'demo': batch_item, 'output': output})
+
+    if render_examples:
+        nrows = int(len(examples) ** 0.5)
+        ncols = -(-len(examples) // nrows) # cieling
+
+        _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
+        axes = axes.flatten()
+
+        for idx, example in enumerate(examples):
+            # demo 
+            demo_xys = example['demo'][0].detach().cpu().numpy()[:, :2]
+
+            # random policy (10 trajectories)
+            rand_policy_trajs = example['output']['rand_trajs']
+            rand_policy_xys = np.stack([np.stack(traj['states'], 0)[:, :2] for traj in rand_policy_trajs], 0) 
+            rand_policy_xys = rand_policy_xys.reshape(-1, 2)
+            axes[idx].scatter(rand_policy_xys[:,0], rand_policy_xys[:,1], c='g', alpha=0.1)
+
+            # policy output
+            policy_xy = np.stack(example['output']['policy_traj']['states'], 0)[:, :2]
+            axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange')
+
+            # mark start and end (goal) of imitation
+            mid = len(policy_xy)
+            axes[idx].scatter([demo_xys[mid, 0]], [demo_xys[mid, 1]], s=320, marker='*', c='red', label='start')
+            axes[idx].scatter([demo_xys[-1, 0]], [demo_xys[-1, 1]], s=320, marker='*', c='green', label='goal')
+
+            # plot relevant portion of the demonstration
+            axes[idx].plot(demo_xys[mid:, 0], demo_xys[mid:, 1], linestyle='--', c='b')
+
+            # axes[idx].set_xlim([0, 4])
+            # axes[idx].set_ylim([0, 4])
+
+
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=250)

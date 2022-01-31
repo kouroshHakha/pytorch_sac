@@ -1,4 +1,5 @@
 from typing import Optional
+from numpy import dtype
 
 import torch
 import torch.nn as nn
@@ -173,6 +174,23 @@ import transformers
 from decision_transformer.models.trajectory_gpt2 import GPT2Model
 import einops
 
+
+def get_rand_trajectories(env, rst_obs, niter, steps_per_episode):
+    rand_trajs = []
+    for _ in range(niter):
+        env.reset()
+        env.set_state(rst_obs[:2], rst_obs[2:])
+
+        traj = {'states': [], 'actions': []}
+        for _ in range(steps_per_episode):
+            a = env.action_space.sample()
+            s, _, _, _  = env.step(a)
+            traj['states'].append(s)
+            traj['actions'].append(a)
+        rand_trajs.append(traj)      
+    return rand_trajs         
+
+
 class GCDT(nn.Module):
     def __init__(self, conf):
         super().__init__()
@@ -291,12 +309,60 @@ class GCDT(nn.Module):
         # helper function for running the DT
         state_embs, _ = self(state_ctx, action_ctx, goal)
         pred_ac = self.decode_next_action(state_embs)
-        return pred_ac
+        # batched but keep the last step
+        return pred_ac[:, -1]
+
+    def imitate(self, env, batch_item):
+        
+        device = self.transformer.device
+        obs, goal, ac = batch_item
+        # obs.shape = (2*T, D)
+        steps = len(obs) // 2
+
+        # rst_obs should be the middle timestep
+        rst_obs = obs[steps].detach().cpu().numpy()
+
+        # random policy
+        rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
+        
+        state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
+        action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
+        # goal is the xy of the last obs
+        goal = torch.as_tensor(obs[-1][:2], dtype=torch.float, device=device)[None]
+
+        env.reset()
+        env.set_state(rst_obs[:2], rst_obs[2:])
+        traj = {'states': [], 'actions': []}
+        for t in range(steps):
+            a = self.get_action(state_ctx, action_ctx, goal).squeeze(0)
+            # # copying open loop actions
+            # a = ac[steps + t]
+            a = a.detach().cpu().numpy()
+            s, _, _, _ = env.step(a)
+
+            traj['states'].append(s)
+            traj['actions'].append(a)
+
+            # convert numpy to batched tensors (1, 1, D)
+            s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
+            a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
+
+            # context is bootstraped on policies' own actions
+            state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
+            action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
+
+        output = dict(
+            rand_trajs=rand_trajs,
+            policy_traj=traj
+        )
+
+        return output
 
 class GCDTLightningModule(GCDT, pl.LightningModule):
 
     def __init__(self, conf):
         super().__init__(conf)
+        self.conf = conf
         self.save_hyperparameters(conf)
 
     def configure_optimizers(self):
@@ -310,6 +376,14 @@ class GCDTLightningModule(GCDT, pl.LightningModule):
     def training_epoch_end(self, outputs) -> None:
         losses = torch.stack([item['loss'] for item in outputs], 0)
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
+
+    def validation_step(self, batch, batch_idx):
+        loss, _, _ = self.ff(batch)
+        return loss
+
+    def validation_epoch_end(self, outputs) -> None:
+        losses = torch.stack([loss for loss in outputs], 0)
+        self.log('valid_loss', losses.mean())
 
 ########################################################
 ################### Trajectory BERT  ###################
@@ -425,7 +499,7 @@ class TraphormerLightningModule(pl.LightningModule):
         mask_rate = self.conf.mask_rate
         # mask p percent of the input tokens for each batch
         # mask = 0 means no attention
-        mask = (torch.rand(B, T) > mask_rate).long()
+        mask = (torch.rand(B, T) > mask_rate).long().to(device=states.device)
         # make sure the first and last timesteps are part of the input seq
         mask[:, 0] = 1
         mask[:, -1] = 1
@@ -441,6 +515,69 @@ class TraphormerLightningModule(pl.LightningModule):
 
         return loss, pred_ac, pred_ns
 
+    def get_goal(self, state_ctx, action_ctx, mask=True, augment=True):
+
+        if augment:
+            state_ctx, action_ctx = self._augment(state_ctx, action_ctx)
+
+        if mask:
+            mask_ctx = self._get_mask(state_ctx)
+        else:
+            mask_ctx = torch.ones(state_ctx.shape[:2], dtype=torch.long, device=state_ctx.device)
+
+        task_emb = self.encoder(state_ctx, action_ctx, mask_ctx)
+        return task_emb
+
+    def imitate(self, env, batch_item):
+        
+        device = self.transformer.device
+        # c_s, c_a, obs, ac = batch_item
+        # using the GCPM dataset ...
+        obs, _, ac = batch_item
+        # obs.shape = (2*T, D)
+        steps = len(obs) // 2
+
+        # rst_obs should be the middle timestep
+        rst_obs = obs[steps].detach().cpu().numpy()
+
+        # random policy
+        rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
+        
+        state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
+        action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
+
+        # TODO: What should goal embedding be during inference? 
+        # should goal be encoding of c_s, and c_a or obs, ac? with or without mask?
+        goal = self.get_goal(obs[steps:][None], ac[steps:][None], mask=False, augment=False)
+
+        env.reset()
+        env.set_state(rst_obs[:2], rst_obs[2:])
+        traj = {'states': [], 'actions': []}
+        for t in range(steps):
+            a = self.decoder.get_action(state_ctx, action_ctx, goal).squeeze(0)
+            # # copying open loop actions
+            # a = ac[steps + t]
+            a = a.detach().cpu().numpy()
+            s, _, _, _ = env.step(a)
+
+            traj['states'].append(s)
+            traj['actions'].append(a)
+
+            # convert numpy to batched tensors (1, 1, D)
+            s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
+            a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
+
+            # context is bootstraped on policies' own actions
+            state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
+            action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
+
+        output = dict(
+            rand_trajs=rand_trajs,
+            policy_traj=traj
+        )
+
+        return output
+
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.conf.lr)
 
@@ -452,3 +589,11 @@ class TraphormerLightningModule(pl.LightningModule):
     def training_epoch_end(self, outputs) -> None:
         losses = torch.stack([item['loss'] for item in outputs], 0)
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
+
+    def validation_step(self, batch, batch_idx):
+        loss, _, _ = self.ff(batch)
+        return loss
+
+    def validation_epoch_end(self, outputs) -> None:
+        losses = torch.stack([loss for loss in outputs], 0)
+        self.log('valid_loss', losses.mean())
