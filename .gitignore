@@ -11,8 +11,9 @@ dmc_benchmarks.py
 
 *.gif
 lightning_logs
-tb_logs
+*_logs
 agent_runs
 .idea
+.wandbrc
 
 d4rl_datasets
