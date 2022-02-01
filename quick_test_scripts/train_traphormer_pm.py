@@ -14,7 +14,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from osil.data import OsilPM, GCPM
+from osil.data import OsilPM, TestOsilPM
 from osil.nets import TraphormerLightningModule
 from osil.utils import ParamDict
 from osil.eval import evaluate_osil_pm
@@ -56,9 +56,7 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     train_dataset = OsilPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size)
-    # for comparison to GCDT we need to adjust the trajectory inds to have a comparable dataset overlap
-    inds_max = int(pargs.val_dsize * pargs.trg_size / pargs.ctx_size)
-    valid_dataset = Subset(OsilPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size), indices=np.arange(inds_max))
+    valid_dataset = Subset(OsilPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size), indices=np.arange(pargs.val_dsize))
     
     tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0)
     vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0)
@@ -129,11 +127,11 @@ def main(pargs):
 
     ckpt_callback = ModelCheckpoint(
                 monitor='valid_loss',
-                filename='cgl-{step}-{valid_loss_epoch:.4f}-{epoch:02d}',
+                filename='cgl-{step}-{valid_loss:.4f}-{epoch:02d}',
                 save_last=True,
                 save_on_train_epoch_end=True,
                 mode='min',
-                save_top_k=10, # save the last 10 ckpts
+                # save_top_k=10, # save the last 10 ckpts
             )
 
     trainer = pl.Trainer(
@@ -163,7 +161,7 @@ def main(pargs):
     # test_dataset = OsilPM(ctx_size=pargs.ctx_size, trg_size=2*pargs.trg_size)
     
     # for testing fairly we should use GCPM dataset: hack the imitate method to make it compatible
-    test_dataset = GCPM(block_size=2*pargs.trg_size)
+    test_dataset = TestOsilPM()
     evaluate_osil_pm(agent, test_dataset, eval_output_dir=eval_output_dir, render_examples=True)
     print('Evaluating the agent is done.')
 

@@ -118,8 +118,8 @@ class EvaluatorGC(Evaluator):
 
 
 def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=True):
-    T = 16
-    plot_path = Path(eval_output_dir) / 'examples.png'
+    T = 4
+    plot_path = Path(eval_output_dir) / f'examples_{T}.png'
     examples = []
     for _ in range(T):
         env = test_dataset.get_new_env()
@@ -139,23 +139,23 @@ def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=Tr
             # demo 
             demo_xys = example['demo'][0].detach().cpu().numpy()[:, :2]
 
-            # random policy (10 trajectories)
-            rand_policy_trajs = example['output']['rand_trajs']
-            rand_policy_xys = np.stack([np.stack(traj['states'], 0)[:, :2] for traj in rand_policy_trajs], 0) 
-            rand_policy_xys = rand_policy_xys.reshape(-1, 2)
-            axes[idx].scatter(rand_policy_xys[:,0], rand_policy_xys[:,1], c='g', alpha=0.1)
+            # # random policy (10 trajectories)
+            # rand_policy_trajs = example['output']['rand_trajs']
+            # rand_policy_xys = np.stack([np.stack(traj['states'], 0)[:, :2] for traj in rand_policy_trajs], 0) 
+            # rand_policy_xys = rand_policy_xys.reshape(-1, 2)
+            # axes[idx].scatter(rand_policy_xys[:,0], rand_policy_xys[:,1], c='g', alpha=0.1)
 
             # policy output
             policy_xy = np.stack(example['output']['policy_traj']['states'], 0)[:, :2]
-            axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange')
+            axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5)
 
             # mark start and end (goal) of imitation
-            mid = len(policy_xy)
-            axes[idx].scatter([demo_xys[mid, 0]], [demo_xys[mid, 1]], s=320, marker='*', c='red', label='start')
+            axes[idx].scatter([demo_xys[0, 0]], [demo_xys[0, 1]], s=320, marker='*', c='red', label='start')
             axes[idx].scatter([demo_xys[-1, 0]], [demo_xys[-1, 1]], s=320, marker='*', c='green', label='goal')
 
-            # plot relevant portion of the demonstration
-            axes[idx].plot(demo_xys[mid:, 0], demo_xys[mid:, 1], linestyle='--', c='b')
+            # plot the demonstration
+            axes[idx].plot(demo_xys[:, 0], demo_xys[:, 1], linestyle='--', c='b')
+
 
             # axes[idx].set_xlim([0, 4])
             # axes[idx].set_ylim([0, 4])

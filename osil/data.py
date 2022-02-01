@@ -112,9 +112,11 @@ class GCDMC(Dataset):
 
 class GCPM(Dataset):
 
-    def __init__(self, name='maze2d-open-v0', block_size=64):
-        self.block_size = block_size
-        
+    def __init__(self, name='maze2d-open-v0', ctx_size=256, trg_size=64, goal_type='only_last'):
+        self.context_size = ctx_size
+        self.target_size = trg_size
+        self.goal_type = goal_type
+
         self.name = name
         env = gym.make(name)
         self.data = env.get_dataset()
@@ -122,29 +124,35 @@ class GCPM(Dataset):
 
         self.acs = self.data['actions']
 
+        self.n = len(self.obses) - self.context_size
+        self.m = self.context_size - self.target_size
+
     def __len__(self):
-        return len(self.obses) - self.block_size*2 - 1000
+        return self.n * self.m 
         
     def __getitem__(self, idx):
-        # grab a chunk of (block_size + 1) characters from the data
-        obses = self.obses[idx:idx + self.block_size]
-        acs = self.acs[idx:idx + self.block_size]
         
-        # x, y location of some future state that is at least 24 and at most 64 steps away from the last state in the current trajectory
-        # rand_id = np.random.randint(low=24, high=64)
-        rand_id = 0
-        goal = self.obses[idx + self.block_size + rand_id: idx + self.block_size + rand_id + 1, :2]
+        ctx_idx = idx // self.m
+        c_s = torch.tensor(self.obses[ctx_idx: ctx_idx + self.context_size], dtype=torch.float)
+        c_a = torch.tensor(self.acs[ctx_idx: ctx_idx + self.context_size], dtype=torch.float)
         
-        
-        x = torch.tensor(obses, dtype=torch.float)
-        goal = torch.tensor(goal, dtype=torch.float).squeeze(0)
-        y = torch.tensor(acs, dtype=torch.float)
+        if self.goal_type == 'only_last':
+            # x, y location of the last step
+            goal = c_s[-1:, :2]
+        elif self.goal_type == 'zero':
+            goal = torch.zeros(1, 2).to(c_s)
+        elif self.goal_type == 'last+start':
+            goal = torch.cat([c_s[0, :2], c_s[-1, :2]], -1)[None]
+        else:
+            raise ValueError('unknown goal type')
+
+        # t_start = np.random.randint(low=idx, high=idx + self.context_size - self.target_size)
+        t_start = idx % self.m 
+        t_s = torch.tensor(self.obses[t_start: t_start + self.target_size], dtype=torch.float)
+        t_a = torch.tensor(self.acs[t_start: t_start + self.target_size], dtype=torch.float)
 
         # output: x (B, T, s_dim), goal (B, g_dim), y (B, T, a_dim)
-        return x, goal, y
-
-    def get_new_env(self):
-        return gym.make(self.name)
+        return t_s, goal, t_a
 
 
 class OsilPM(Dataset):
@@ -160,10 +168,9 @@ class OsilPM(Dataset):
         self.acs = self.data['actions']
 
     def __len__(self):
-        return len(self.obses) - self.context_size * 2
+        return len(self.obses) - self.context_size
 
     def __getitem__(self, idx):
-        # c_idx = slice(idx, idx + self.context_size)
         c_s = torch.tensor(self.obses[idx: idx + self.context_size], dtype=torch.float)
         c_a = torch.tensor(self.acs[idx: idx + self.context_size], dtype=torch.float)
 
@@ -172,6 +179,26 @@ class OsilPM(Dataset):
         t_a = torch.tensor(self.acs[t_start: t_start + self.target_size], dtype=torch.float)
 
         return c_s, c_a, t_s, t_a
+
+
+class TestOsilPM(Dataset):
+
+    def __init__(self, name='maze2d-open-v0', traj_size=128):
+        self.traj_size = traj_size
+
+        self.name = name
+        env = gym.make(name)
+        self.data = env.get_dataset()
+        self.obses = self.data['observations']
+        self.acs = self.data['actions']
+
+    def __len__(self):
+        return len(self.obses) - self.traj_size
+
+    def __getitem__(self, idx):
+        s = torch.tensor(self.obses[idx: idx + self.traj_size], dtype=torch.float)
+        a = torch.tensor(self.acs[idx: idx + self.traj_size], dtype=torch.float)
+        return s, a
 
     def get_new_env(self):
         return gym.make(self.name)

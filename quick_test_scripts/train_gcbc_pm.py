@@ -15,33 +15,82 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.data import GCPM, TestOsilPM
-from osil.nets import GCDTLightningModule
+from osil.nets import GCBC
 from osil.utils import ParamDict
 from osil.eval import evaluate_osil_pm
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
 
+from torch.utils.data import Dataset
+import torch
+import d4rl; import gym
+
+class PointmassBCDataset(Dataset):
+
+    def __init__(self, name='maze2d-open-v0', block_size=64, goal_type='only_last'):
+        
+        self.block_size = block_size
+        
+        env = gym.make(name)
+        self.data = env.get_dataset()
+        self.obses = self.data['observations']
+  
+        self.acs = self.data['actions']
+        self.goal_type = goal_type
+    
+    
+    def __len__(self):
+        return len(self.obses) - 2*self.block_size
+
+    def __getitem__(self, idx):
+        # grab a chunk of (block_size + 1) characters from the data
+        obses = self.obses[idx:idx + 2*self.block_size]
+        acs = self.acs[idx:idx + 2*self.block_size]
+        
+        # update 1: x, y are subset of larger obses but goal is still defined based on x
+        start_idx = torch.randint(high=self.block_size, size=(1, ))
+        x = torch.tensor(obses[start_idx: start_idx + self.block_size], dtype=torch.float)
+        y = torch.tensor(acs[start_idx: start_idx + self.block_size], dtype=torch.float)
+
+        # update 2: x, y are subset of larger but goal is defined based on that large trajectory
+        if self.goal_type == 'only_last':
+            # x, y location of the last step
+            # goal = x[-1:, :2]
+            goal = torch.as_tensor(obses[-1:, :2], dtype=torch.float)
+        elif self.goal_type == 'zero':
+            goal = torch.zeros(1, 2).to(x)
+        elif self.goal_type == 'last+start':
+            # goal = torch.cat([x[0, :2], x[-1, :2]], -1)[None]
+            goal_np = np.concatenate([obses[0, :2], obses[-1, :2]], -1)[None]
+            goal = torch.as_tensor(goal_np, dtype=torch.float)
+        else:
+            raise ValueError('unknown goal type')
+
+
+        return x, goal, y
+    
 
 def _parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--seed', default=1, type=int)
-    # parser.add_argument('--weight_decay', '-wc', default=1e-4, type=float)
-    parser.add_argument('--hidden_dim', '-hd', default=128, type=int)
-    parser.add_argument('--batch_size', '-bs', default=128, type=int)
-    parser.add_argument('--val_dsize', '-vs', default=128, type=int)
+    parser.add_argument('--weight_decay', '-wc', default=1e-4, type=float)
+    parser.add_argument('--hidden_dim', '-hd', default=256, type=int)
+    parser.add_argument('--batch_size', '-bs', default=8192, type=int)
+    # parser.add_argument('--val_dsize', '-vs', default=1000000, type=int)
+    parser.add_argument('--val_dsize', '-vs', default=1000, type=int)
     # parser.add_argument('--lr', '-lr', default=1e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', default=1, type=int)
-    parser.add_argument('--ctx_size', default=256, type=int)
-    parser.add_argument('--trg_size', default=64, type=int)
+    parser.add_argument('--ctx_size', default=64, type=int) # how far in the future do u want the goal to be at?
+    parser.add_argument('--trg_size', default=1, type=int) # decoding context
     parser.add_argument('--goal_type', default='only_last', type=str)
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
     
-    parser.add_argument('--use_wandb', '-wb', action='store_true') # not setup right now
+    parser.add_argument('--use_wandb', '-wb', action='store_true')
     parser.add_argument('--wandb_id', type=str, help='Wandb id to allow for resuming')
     parser.add_argument('--run_name', type=str, default=None, help='Wandb run name, if not provided the deafult of wandb is used')
     # parser.add_argument('--num_eval_episodes', default=10, type=int)
@@ -51,16 +100,25 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'gct_pm'
+    exp_name = f'gcbc_pm'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
-
-    train_dataset = GCPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size, goal_type=pargs.goal_type)
-    valid_dataset = Subset(GCPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size, goal_type=pargs.goal_type), indices=np.arange(pargs.val_dsize))
     
-    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=4)
-    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0)
+    # assert pargs.trg_size == 1, 'For BC trg_size should be 1'
+    # dset = GCPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size, goal_type=pargs.goal_type)
+    # train_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize))
+    # valid_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize, len(dset)))
+
+
+    dset = PointmassBCDataset(block_size=64, goal_type=pargs.goal_type)
+    train_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize))
+    valid_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize, len(dset)))
+    
+    tloader = DataLoader(train_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=40)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16)
     obs, goal, act = train_dataset[0]
+    # obs, act = train_dataset[0]
+    # goal_dim = 8
 
     # # plot some example datasets
     # _, axes = plt.subplots(1,1, squeeze=False)
@@ -79,15 +137,14 @@ def main(pargs):
 
     config = ParamDict(
         hidden_dim=pargs.hidden_dim,
-        max_ep_len=1024,
-        obs_shape=obs.shape[1:],
+        obs_shape=(obs.shape[-1],),
+        # obs_shape=obs.shape[1:],
         ac_dim=act.shape[-1],
         goal_dim=goal.shape[-1],
-        # loss_type='action_plus_dynamics',
-        loss_type='only_action',
+        # goal_dim=goal_dim,
         lr=1e-4,
         goal_type=pargs.goal_type,
-        decoder_size=pargs.trg_size,
+        wd=pargs.weight_decay,
     )
 
     ######## check model's input to output dependency
@@ -101,7 +158,7 @@ def main(pargs):
     ckpt = args_var.get('ckpt', '')
     resume = args_var.get('resume', False)
     
-    agent = GCDTLightningModule.load_from_checkpoint(ckpt) if ckpt else GCDTLightningModule(config)
+    agent = GCBC.load_from_checkpoint(ckpt) if ckpt else GCBC(config)
     agent = agent.to(device=pargs.device)
 
     if pargs.use_wandb:
@@ -132,7 +189,8 @@ def main(pargs):
         resume_from_checkpoint=ckpt if resume else None,
         logger=logger,
         gpus=1 if pargs.device == 'cuda' else 0,
-        val_check_interval=500, # check val set every x steps
+        # val_check_interval=500, # check val set every x steps
+        # val_check_interval=1000,
         callbacks=[ckpt_callback],
     )
 
@@ -151,7 +209,7 @@ def main(pargs):
     pl.seed_everything(0)
     # test dataset uses twice the block size at the moment to not introduce 
     # any confounding factor fro early timesteps in the epiode that we want to imitate. 
-    test_dataset = TestOsilPM()
+    test_dataset = TestOsilPM(traj_size=128)
     evaluate_osil_pm(agent, test_dataset, eval_output_dir=eval_output_dir, render_examples=True)
     print('Evaluating the agent is done.')
 
