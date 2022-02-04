@@ -54,16 +54,22 @@ class PointmassBCDataset(Dataset):
         y = torch.tensor(acs[start_idx: start_idx + self.block_size], dtype=torch.float)
 
         # update 2: x, y are subset of larger but goal is defined based on that large trajectory
-        if self.goal_type == 'only_last':
-            # x, y location of the last step
-            # goal = x[-1:, :2]
+        if self.goal_type == 'last+start_qpos_qvel_s':
+            goal = torch.cat([x[0], x[-1]], -1)[None]
+        elif self.goal_type == 'last+start_qpos_s':
+            goal = torch.cat([x[0, :2], x[-1, :2]], -1)[None]
+        elif self.goal_type == 'last_qpos_s':
+            goal = torch.as_tensor(x[-1:, :2], dtype=torch.float)
+        elif self.goal_type == 'last+start_qpos_qvel_c':
+            goal_np = np.concatenate([obses[0], obses[-1]], -1)[None]
+            goal = torch.as_tensor(goal_np, dtype=torch.float)
+        elif self.goal_type == 'last+start_qpos_c':
+            goal_np = np.concatenate([obses[0, :2], obses[-1, :2]], -1)[None]
+            goal = torch.as_tensor(goal_np, dtype=torch.float)
+        elif self.goal_type == 'last_qpos_c':
             goal = torch.as_tensor(obses[-1:, :2], dtype=torch.float)
         elif self.goal_type == 'zero':
             goal = torch.zeros(1, 2).to(x)
-        elif self.goal_type == 'last+start':
-            # goal = torch.cat([x[0, :2], x[-1, :2]], -1)[None]
-            goal_np = np.concatenate([obses[0, :2], obses[-1, :2]], -1)[None]
-            goal = torch.as_tensor(goal_np, dtype=torch.float)
         else:
             raise ValueError('unknown goal type')
 
@@ -80,12 +86,12 @@ def _parse_args():
     parser.add_argument('--batch_size', '-bs', default=8192, type=int)
     # parser.add_argument('--val_dsize', '-vs', default=1000000, type=int)
     parser.add_argument('--val_dsize', '-vs', default=1000, type=int)
-    # parser.add_argument('--lr', '-lr', default=1e-4, type=float)
+    parser.add_argument('--lr', '-lr', default=3e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', default=1, type=int)
     parser.add_argument('--ctx_size', default=64, type=int) # how far in the future do u want the goal to be at?
     parser.add_argument('--trg_size', default=1, type=int) # decoding context
-    parser.add_argument('--goal_type', default='only_last', type=str)
+    parser.add_argument('--goal_type', default='last_qpos_c', type=str)
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
@@ -142,7 +148,7 @@ def main(pargs):
         ac_dim=act.shape[-1],
         goal_dim=goal.shape[-1],
         # goal_dim=goal_dim,
-        lr=1e-4,
+        lr=pargs.lr,
         goal_type=pargs.goal_type,
         wd=pargs.weight_decay,
     )

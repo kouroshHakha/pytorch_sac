@@ -188,6 +188,21 @@ class GCBC(BC):
         pred_ac = self.mlp(mlp_in)
         return pred_ac
 
+    def get_goal(self, state_ctx, action_ctx, start_target=0):
+        
+        goal_type = self.conf.goal_type
+        if goal_type.startswith('last+start_qpos_qvel'):
+            goal = torch.cat([state_ctx[start_target], state_ctx[-1]], -1)[None]
+        elif goal_type.startswith('last+start_qpos'):
+        # elif goal_type.startswith('last+start'):
+            goal = torch.cat([state_ctx[start_target, :2], state_ctx[-1, :2]], -1)[None]
+        elif goal_type.startswith('last_qpos'):
+            goal = torch.as_tensor(state_ctx[-1][:2])[None]
+        elif goal_type == 'zero':
+            goal = torch.zeros(1, 2)
+        else:
+            raise ValueError(f'unknown goal type {goal_type}')
+        return goal
 
     def imitate(self, env, batch_item):
         
@@ -204,38 +219,41 @@ class GCBC(BC):
         
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
-        # goal is the xy of the last obs
-        if self.conf.goal_type == 'only_last':
-            goal = torch.as_tensor(obs[-1][:2], dtype=torch.float, device=device)[None]
-        elif self.conf.goal_type == 'zero':
-            goal = torch.zeros(2).float().to(device)[None]
-        elif self.conf.goal_type == 'last+start':
-            goal = torch.cat([obs[steps, :2], obs[-1, :2]], -1).float().to(device)[None]
-            # goal = torch.cat([obs[steps], obs[-1]], -1).float().to(device)[None]
+        # # goal is the xy of the last obs
+        # if self.conf.goal_type == 'only_last':
+        #     goal = torch.as_tensor(obs[-1][:2], dtype=torch.float, device=device)[None]
+        # elif self.conf.goal_type == 'zero':
+        #     goal = torch.zeros(2).float().to(device)[None]
+        # elif self.conf.goal_type == 'last+start':
+        #     goal = torch.cat([obs[steps, :2], obs[-1, :2]], -1).float().to(device)[None]
+        #     # goal = torch.cat([obs[steps], obs[-1]], -1).float().to(device)[None]
 
-        env.reset()
-        env.set_state(rst_obs[:2], rst_obs[2:])
-        traj = {'states': [o.detach().cpu().numpy() for o in obs[:steps]], 'actions': [a.detach().cpu().numpy() for a in ac[:steps]]}
-        for t in range(len(obs) - steps):
-            a = self(state_ctx[:, -1], goal).squeeze(0)
-            a = a.detach().cpu().numpy()
-            s, _, _, _ = env.step(a)
+        output = dict(rand_trajs=rand_trajs)
+        for start in [0, steps]:
+            # run two goal embeddings: 1) start is where episode len becomes 64 2) start is the beginning of the ep (e.g. ep_len=128)
+            goal = self.get_goal(obs, ac, start_target=start).to(device)
 
-            traj['states'].append(s)
-            traj['actions'].append(a)
+            env.reset()
+            rst_obs = obs[steps].detach().cpu().numpy()
+            env.set_state(rst_obs[:2], rst_obs[2:])
+            traj = {'states': [o.detach().cpu().numpy() for o in obs[:steps]], 'actions': [a.detach().cpu().numpy() for a in ac[:steps]]}
+            for t in range(len(obs) - steps):
+                a = self(state_ctx[:, -1], goal).squeeze(0)
+                a = a.detach().cpu().numpy()
+                s, _, _, _ = env.step(a)
 
-            # convert numpy to batched tensors (1, 1, D)
-            s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
-            a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
+                traj['states'].append(s)
+                traj['actions'].append(a)
 
-            # context is bootstraped on policies' own actions
-            state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
-            action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
+                # convert numpy to batched tensors (1, 1, D)
+                s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
+                a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
 
-        output = dict(
-            rand_trajs=rand_trajs,
-            policy_traj=traj
-        )
+                # context is bootstraped on policies' own actions
+                state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
+                action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
+
+            output[f'policy_traj_{start}'] = traj
 
         return output
 
@@ -768,35 +786,34 @@ class TraphormerBCLightningModule(pl.LightningModule):
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
 
-        # TODO: What should goal embedding be during inference? 
-        # should goal be encoding of c_s, and c_a or obs, ac? with or without mask?
-        goal = self.get_goal(obs[None].to(device), ac[None].to(device), mask=True, augment=True)
+        output = dict(rand_trajs=rand_trajs)
+        for mask in [False, True]:
+            # TODO: What should goal embedding be during inference? 
+            # should goal be encoding of c_s, and c_a or obs, ac? with or without mask?
+            goal = self.get_goal(obs[None].to(device), ac[None].to(device), mask=mask, augment=True)
 
-        env.reset()
-        env.set_state(rst_obs[:2], rst_obs[2:])
-        traj = {'states': [o.detach().cpu().numpy() for o in obs[:steps]], 'actions': [a.detach().cpu().numpy() for a in ac[:steps]]}
-        for t in range(steps):
-            a = self.decoder(state_ctx[:, -1], goal).squeeze(0)
-            # # copying open loop actions
-            # a = ac[steps + t]
-            a = a.detach().cpu().numpy()
-            s, _, _, _ = env.step(a)
+            env.reset()
+            env.set_state(rst_obs[:2], rst_obs[2:])
+            traj = {'states': [o.detach().cpu().numpy() for o in obs[:steps]], 'actions': [a.detach().cpu().numpy() for a in ac[:steps]]}
+            for t in range(steps):
+                a = self.decoder(state_ctx[:, -1], goal).squeeze(0)
+                # # copying open loop actions
+                # a = ac[steps + t]
+                a = a.detach().cpu().numpy()
+                s, _, _, _ = env.step(a)
 
-            traj['states'].append(s)
-            traj['actions'].append(a)
+                traj['states'].append(s)
+                traj['actions'].append(a)
 
-            # convert numpy to batched tensors (1, 1, D)
-            s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
-            a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
+                # convert numpy to batched tensors (1, 1, D)
+                s = torch.as_tensor(s, dtype=torch.float, device=device)[None, None]
+                a = torch.as_tensor(a, dtype=torch.float, device=device)[None, None]
 
-            # context is bootstraped on policies' own actions
-            state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
-            action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
+                # context is bootstraped on policies' own actions
+                state_ctx = torch.cat([state_ctx[:, 1:], s], 1)
+                action_ctx = torch.cat([action_ctx[:, 1:], a], 1)
 
-        output = dict(
-            rand_trajs=rand_trajs,
-            policy_traj=traj
-        )
+                output[f'policy_traj_mask={mask}'] = traj
 
         return output
 

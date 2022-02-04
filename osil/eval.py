@@ -118,10 +118,12 @@ class EvaluatorGC(Evaluator):
 
 
 def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=True):
-    T = 4
-    plot_path = Path(eval_output_dir) / f'examples_{T}.png'
+    T_exps = 100
+    T_render = 4
+    plot_path = Path(eval_output_dir) / f'examples_{T_render}.png'
+    output_yaml_path = Path(eval_output_dir) / f'eval.yaml'
     examples = []
-    for _ in range(T):
+    for _ in range(T_exps):
         env = test_dataset.get_new_env()
         idx = np.random.randint(len(test_dataset))
         batch_item = test_dataset[idx]
@@ -135,7 +137,7 @@ def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=Tr
         _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
         axes = axes.flatten()
 
-        for idx, example in enumerate(examples):
+        for idx, example in enumerate(examples[:T_render]):
             # demo 
             demo_xys = example['demo'][0].detach().cpu().numpy()[:, :2]
 
@@ -145,21 +147,45 @@ def evaluate_osil_pm(agent, test_dataset, eval_output_dir='', render_examples=Tr
             # rand_policy_xys = rand_policy_xys.reshape(-1, 2)
             # axes[idx].scatter(rand_policy_xys[:,0], rand_policy_xys[:,1], c='g', alpha=0.1)
 
+            # TODO: 64 is assumed to be in the middle for now
             # policy output
-            policy_xy = np.stack(example['output']['policy_traj']['states'], 0)[:, :2]
-            axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5)
+            output = example['output']
+            if 'policy_traj_mask=True' in output:
+                policy_xy_masked = np.stack(output['policy_traj_mask=True']['states'], 0)[:, :2]
+                axes[idx].plot(policy_xy_masked[:, 0], policy_xy_masked[:, 1], linestyle='-', c='orange', linewidth=5, label='mask=True')
+                policy_xy_unmask = np.stack(output['policy_traj_mask=False']['states'], 0)[:, :2]
+                axes[idx].plot(policy_xy_unmask[:, 0], policy_xy_unmask[:, 1], linestyle='-', c='red', linewidth=5, label='mask=False')
+            else:
+                policy_xy_0 = np.stack(output['policy_traj_0']['states'], 0)[:, :2]
+                axes[idx].plot(policy_xy_0[:, 0], policy_xy_0[:, 1], linestyle='-', c='orange', alpha=0.5, linewidth=5, label='start=0')
+                policy_xy_64 = np.stack(output['policy_traj_64']['states'], 0)[:, :2]
+                axes[idx].plot(policy_xy_64[:, 0], policy_xy_64[:, 1], linestyle='-', c='red', alpha=0.5, linewidth=5, label='start=64')
 
             # mark start and end (goal) of imitation
             axes[idx].scatter([demo_xys[0, 0]], [demo_xys[0, 1]], s=320, marker='*', c='red', label='start')
             axes[idx].scatter([demo_xys[-1, 0]], [demo_xys[-1, 1]], s=320, marker='*', c='green', label='goal')
+            mid = len(demo_xys)//2
+            axes[idx].scatter([demo_xys[mid, 0]], [demo_xys[mid, 1]], s=320, c='orange', label='policy_start')
 
             # plot the demonstration
             axes[idx].plot(demo_xys[:, 0], demo_xys[:, 1], linestyle='--', c='b')
 
-
             # axes[idx].set_xlim([0, 4])
             # axes[idx].set_ylim([0, 4])
 
-
+        plt.legend()
         plt.tight_layout()
         plt.savefig(plot_path, dpi=250)
+
+
+    for example in examples:
+        demo = example['demo']
+        output=  example['output']
+
+        demo_xys = demo[0].detach().cpu().numpy()[:, :2]
+        if 'policy_traj_mask=True' in output:
+            policy_xy_masked = np.stack(output['policy_traj_mask=True']['states'], 0)[:, :2]
+            policy_xy_unmask = np.stack(output['policy_traj_mask=False']['states'], 0)[:, :2]
+        else:
+            policy_xy_0 = np.stack(output['policy_traj_0']['states'], 0)[:, :2]
+            policy_xy_64 = np.stack(output['policy_traj_64']['states'], 0)[:, :2]

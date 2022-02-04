@@ -79,16 +79,17 @@ def _parse_args():
     parser.add_argument('--seed', default=1, type=int)
     parser.add_argument('--weight_decay', '-wc', default=1e-4, type=float)
     parser.add_argument('--hidden_dim', '-hd', default=256, type=int)
-    parser.add_argument('--batch_size', '-bs', default=8192, type=int)
+    parser.add_argument('--batch_size', '-bs', default=128, type=int)
     # parser.add_argument('--val_dsize', '-vs', default=1000000, type=int)
     parser.add_argument('--val_dsize', '-vs', default=1000, type=int)
-    # parser.add_argument('--lr', '-lr', default=1e-4, type=float)
+    parser.add_argument('--lr', '-lr', default=3e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', default=1, type=int)
     parser.add_argument('--ctx_size', default=64, type=int) # how far in the future do u want the goal to be at?
     parser.add_argument('--trg_size', default=1, type=int) # decoding context
     parser.add_argument('--mask_rate', default=0.75, type=float)
     parser.add_argument('--goal_type', default='only_last', type=str)
+    parser.add_argument('--goal_dim', default=8, type=int)
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
@@ -144,8 +145,8 @@ def main(pargs):
         # obs_shape=obs.shape[1:],
         max_ep_len=128,
         ac_dim=act.shape[-1],
-        goal_dim=8,
-        lr=1e-4,
+        goal_dim=pargs.goal_dim,
+        lr=pargs.lr,
         goal_type=pargs.goal_type,
         wd=pargs.weight_decay,
         mask_rate=pargs.mask_rate,
