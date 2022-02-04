@@ -9,6 +9,46 @@ import pytorch_lightning as pl
 
 import osil.utils as utils
 
+class BaseLightningModule(pl.LightningModule):
+    def __init__(self, conf):
+        super().__init__()
+
+        self._init_conf(conf)
+        self._build_network()                
+
+    def _init_conf(self, conf):
+        self.save_hyperparameters(conf)
+        conf = utils.ParamDict(conf)
+        self.conf = conf
+
+    def _build_network(self):
+        raise NotImplementedError
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0), 
+                                betas=(0.99, 0.999))
+
+    def ff(self, batch):
+        raise NotImplementedError
+
+    def training_step(self, batch):
+        loss, _ = self.ff(batch[0])
+        self.log('train_loss_batch', loss)
+        return loss
+
+    def training_epoch_end(self, outputs) -> None:
+        losses = torch.stack([item['loss'] for item in outputs], 0)
+        self.log('train_loss_epoch', losses.mean(), prog_bar=True)
+
+    def validation_step(self, batch, batch_idx):
+        loss, _, = self.ff(batch)
+        return loss
+
+    def validation_epoch_end(self, outputs) -> None:
+        losses = torch.stack([loss for loss in outputs], 0)
+        self.log('valid_loss', losses.mean())
+
+
 class Encoder(nn.Module):
     def __init__(self, obs_shape, h_dim):
         super().__init__()
@@ -131,6 +171,50 @@ class BC(pl.LightningModule):
     def validation_epoch_end(self, outputs) -> None:
         losses = torch.stack([loss for loss in outputs], 0)
         self.log('valid_loss', losses.mean())
+
+
+
+class GCBCv2(BaseLightningModule):
+
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    
+    def _build_network(self):
+        obs_dim = self.conf.obs_dim
+        h_dim = self.conf.hidden_dim
+        ac_dim = self.conf.ac_dim
+        goal_dim = self.conf.goal_dim
+
+        self.mlp = nn.Sequential(
+            nn.Linear(obs_dim + goal_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, ac_dim)
+        )
+    
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+        loss = F.mse_loss(pred_ac, target_ac)
+        
+        return loss
+
+    def ff(self, batch):
+        x, goal, y = batch
+        pred_ac = self(x, goal)
+        loss = self.bc_loss(pred_ac, y)
+        return loss, pred_ac
+
+    def forward(self, x, g):
+        mlp_in = torch.cat([x,g], -1)
+        pred_ac = self.mlp(mlp_in)
+        return pred_ac
 
 
 class GCBC(BC):
