@@ -19,3 +19,13 @@ agent_runs
 d4rl_datasets
 
 docker/NVIDIA-Linux-x86_64-495.29.05.run
+
+*.png
+finetune-bert-emb
+lm_cache
+wandb
+
+
+# data for maze2d
+maze2d-*
+maze2d-*

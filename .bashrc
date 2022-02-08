@@ -5,3 +5,5 @@ export D4RL_DATASET_DIR=./d4rl_datasets
 export PYTHONPATH=./:$PYTHONPATH
 
 source .wandbrc
+
+export OPENAI_API_KEY='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'
