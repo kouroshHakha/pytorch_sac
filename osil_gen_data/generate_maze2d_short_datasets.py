@@ -48,25 +48,30 @@ def main():
     for task_idx in [0]: #tqdm(range(args.num_tasks)):
         for var_idx in range(args.num_variation_per_task):
             ep_count = 0
-            with tqdm(total=args.num_demos_per_variation, desc=f'[var_id={var_idx}]') as tbar:
+            target_list = []
+            for _ in range(task_idx + 1):
+                env.set_target()
+                target_list.append(env.get_target())
+
+            with tqdm(total=args.num_demos_per_variation, desc=f'[var_id={var_idx}]') as tbar:                
                 while ep_count < args.num_demos_per_variation:
 
-                    remaining_goals = task_idx + 1
                     # start a new episode 
                     # tgt = np.array([2.94510641, 0.9043638])
-                    env.set_target()
-                    # env.set_target(tgt)
+                    env.set_target(target_list[0])
                     s = get_rst(env)
+                    target_cnt = 0
                     # s = np.array([3.19845818e+00, 7.98728805e+00, -1.37212445e-03, -2.61658096e-01])
                     # env.set_state(s[:2], s[2:])
                     act = env.action_space.sample()
                     done = False
                     ep = {'state': [], 'action': [], 'target': []}
                     ep_len = 0
-                    while remaining_goals > 0 and ep_len < MAX_EP_LEN:
+                    while target_cnt < task_idx + 1 and ep_len < MAX_EP_LEN :
                         
                         position = s[0:2]
                         velocity = s[2:4]
+                        env.set_target(target_list[target_cnt])
                         act, done = controller.get_action(position, velocity, env._target)
                         if args.noisy:
                             act = act + np.random.randn(*act.shape)*0.5
@@ -80,8 +85,8 @@ def main():
                         ep_len += 1
 
                         if done:
-                            remaining_goals -= 1
-                            env.set_target()
+                            target_cnt += 1
+                            # env.set_target(target_list[target_cnt])
                             done = False
                         else:
                             s = ns

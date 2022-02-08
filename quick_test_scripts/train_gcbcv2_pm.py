@@ -19,7 +19,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from osil.data import GCPM, TestOsilPM
 from osil.nets import GCBCv2
 from osil.utils import ParamDict
-from osil.eval import evaluate_osil_pm
+from osil.eval import EvaluatorPointMazeBase
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -29,12 +29,6 @@ import torch
 import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
-
-# set the spin colors of an axes
-def set_spine_color(ax, color):
-    for dir in ['top', 'bottom', 'left', 'right']:
-        ax.spines[dir].set_color(color)
-        ax.spines[dir].set_linewidth(4)
 
 class PointmassBCDataset(Dataset):
 
@@ -60,7 +54,7 @@ class PointmassBCDataset(Dataset):
         sratio, eratio = SPLITS[mode]
         s = int(sratio * len(inds))
         e = int(eratio * len(inds))
-        self.allowed_ids = set(task_name_list[i] for i in inds[s:e].tolist())
+        self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
         
         states, actions, targets = [], [], []
         for task_id, task in self.raw_data.items():
@@ -86,124 +80,19 @@ class PointmassBCDataset(Dataset):
 
         return x, g, y
 
+class Evaluator(EvaluatorPointMazeBase):
 
-def get_test_cases(pargs):
-    test_dataset = PointmassBCDataset(data_path=pargs.dataset_path, mode='test')
-    test_task_ids = test_dataset.allowed_ids
-    
-    # (states, actions, rst_state)
-    for task_id, var_id in test_task_ids:
-        episodes = test_dataset.raw_data[task_id][var_id]
-        
-        test_cases = []
-        for ep_id, ep in enumerate(episodes):
-            # random design choice: use the next episode to obtain reset
-            rst_idx = (ep_id + 1) % len(episodes)
-            test_cases.append((ep['state'], ep['action'], episodes[rst_idx]['state'][0]))
+    def _get_goal(self, demo_state, demo_action):
+        return demo_state[-1, :2]
 
-    return test_cases
+    def _get_action(self, state, goal):
+        device = self.agent.device
+        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
+        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+        pred_ac = self.agent(state_tens, goal_tens)
+        a = pred_ac.squeeze(0).detach().cpu().numpy()
+        return a
 
-def eval(pargs, agent, output_dir):
-    print('Evaluating the agent ...')
-    output_dir = Path(output_dir)
-    test_cases = get_test_cases(pargs)
-
-    successes = []
-    device = agent.device
-
-    example_trajs = []
-    for demo_state, demo_action, new_rst_state in test_cases:
-        env = gym.make(pargs.env_name)
-        
-        # set the reset
-        pos = new_rst_state[:2]
-        vel = new_rst_state[2:]
-        env.reset()
-        env.set_state(pos, vel)
-
-        # set the target
-        goal = demo_state[-1][:2]
-        s = new_rst_state
-        done = False
-        step = 0
-
-        visited_xys = []
-        while not done and step < 128:
-            # step through the policy
-            state_tens = torch.as_tensor(s[None], dtype=torch.float, device=device)
-            goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
-            pred_ac = agent(state_tens, goal_tens)
-            a = pred_ac.squeeze(0).detach().cpu().numpy()
-            
-            visited_xys.append(s[:2])
-            ns, _, _, _ = env.step(a)
-
-            if np.linalg.norm(ns[:2] - goal) < 0.1:
-                done = True
-            else:
-                s = ns
-                step += 1
-
-        example_trajs.append(dict(
-            visited_xys=np.stack(visited_xys, 0),
-            demo_xy=demo_state[:, :2],
-        ))
-        successes.append(done)
-
-    write_yaml(output_dir / 'summary.yaml', dict(success_rate=float(np.mean(successes))))
-    write_pickle(output_dir / 'example_trajs.pkl', example_trajs)
-
-    print('Plotting examples ...')
-    T = 16
-    nrows = int(T ** 0.5)
-    ncols = -(-T // nrows) # cieling
-    plot_path = output_dir / f'examples_{T}.png'
-
-    _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
-    axes = axes.flatten()
-    for idx, traj in enumerate(example_trajs[:T]):
-        policy_xy = traj['visited_xys']
-        demo_xy = traj['demo_xy']
-        axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy')
-        axes[idx].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo')
-        axes[idx].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
-        axes[idx].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
-        set_spine_color(axes[idx], 'green' if successes[idx] else 'red')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=250)
-
-    # plot failed ones too
-    print('Plotting failed examples ...')
-    T = max(16, len(successes) - sum(successes))
-    nrows = int(T ** 0.5)
-    ncols = -(-T // nrows) # cieling
-    plot_path = output_dir / f'examples_{T}_failed.png'
-
-    plt.close()
-    _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
-    axes = axes.flatten()
-
-    count = 0
-    for idx, traj in enumerate(example_trajs):
-        if successes[idx]:
-            continue
-        elif count == T:
-            break
-        policy_xy = traj['visited_xys']
-        demo_xy = traj['demo_xy']
-        axes[count].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy')
-        axes[count].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo')
-        axes[count].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
-        axes[count].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
-        count += 1
-
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=250)
-
-    
-    print(f'Evaluating the agent is done, success rate: {float(np.mean(successes))}')
 
 def _parse_args():
 
@@ -297,8 +186,6 @@ def main(pargs):
         resume_from_checkpoint=ckpt if resume else None,
         logger=logger,
         gpus=1 if pargs.device == 'cuda' else 0,
-        # val_check_interval=500, # check val set every x steps
-        # val_check_interval=1000,
         callbacks=[ckpt_callback],
     )
 
@@ -313,7 +200,9 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
 
-    eval(pargs, agent, eval_output_dir)
+    test_dataset = PointmassBCDataset(data_path=data_path, mode='test')
+    evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
+    evaluator.eval()
 
 
 

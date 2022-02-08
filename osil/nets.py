@@ -28,11 +28,11 @@ class BaseLightningModule(pl.LightningModule):
         return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0), 
                                 betas=(0.99, 0.999))
 
-    def ff(self, batch):
+    def ff(self, batch, compute_loss=True):
         raise NotImplementedError
 
     def training_step(self, batch):
-        loss, _ = self.ff(batch[0])
+        loss, _ = self.ff(batch[0], compute_loss=True)
         self.log('train_loss_batch', loss)
         return loss
 
@@ -41,7 +41,7 @@ class BaseLightningModule(pl.LightningModule):
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
 
     def validation_step(self, batch, batch_idx):
-        loss, _, = self.ff(batch)
+        loss, _, = self.ff(batch, compute_loss=True)
         return loss
 
     def validation_epoch_end(self, outputs) -> None:
@@ -205,13 +205,17 @@ class GCBCv2(BaseLightningModule):
         
         return loss
 
-    def ff(self, batch):
+    def ff(self, batch, compute_loss=True):
         x, goal, y = batch
         pred_ac = self(x, goal)
-        loss = self.bc_loss(pred_ac, y)
-        return loss, pred_ac
+        if compute_loss:
+            loss = self.bc_loss(pred_ac, y)
+            return loss, pred_ac
+        return pred_ac
 
     def forward(self, x, g):
+        assert x.shape[-1] == self.conf.obs_dim, 'state shape is not correct.'
+        assert g.shape[-1] == self.conf.goal_dim, 'goal shape is not correct.'
         mlp_in = torch.cat([x,g], -1)
         pred_ac = self.mlp(mlp_in)
         return pred_ac
@@ -613,13 +617,14 @@ class TrajBERT(nn.Module):
             num_hidden_layers=3,
             num_attention_heads=8,
             intermediate_size=h_dim,
-            max_position_embeddings=self.conf.max_ep_len,
+            # reserve one extra token for cls which will be added in the model
+            max_position_embeddings=self.conf.max_ep_len + 1,
         )
 
         self.transformer = BertModel(bert_config)
 
 
-    def forward(self, states, actions, masks):
+    def forward(self, states, actions, attn_masks):
         # states: B, T, d_s
         # actions: B, T, d_a
         # masks: B, T (make sure it always includes first and last timesteps)
@@ -631,15 +636,15 @@ class TrajBERT(nn.Module):
         action_emb_in = self.emb_action(actions) + self.emb_timestep(timesteps)
 
         input_tokens = einops.rearrange([state_emb_in, action_emb_in], 'i B T h -> B (T i) h')
-        mask_tokens = einops.rearrange([masks, masks], 'i B T -> B (T i)')
+        mask_tokens = einops.rearrange([attn_masks, attn_masks], 'i B T -> B (T i)')
 
         input_tokens = torch.cat([self.cls_token.repeat(B, 1, 1), input_tokens], dim=1)
         mask_tokens = torch.cat([torch.ones(B, 1, dtype=torch.bool).to(mask_tokens), mask_tokens], dim=1)
 
         tf_outputs = self.transformer(inputs_embeds=input_tokens, attention_mask=mask_tokens)
-        traj_emb = tf_outputs['pooler_output']
+        # traj_emb = tf_outputs['pooler_output']
 
-        return traj_emb
+        return tf_outputs
 
 
 ##################################################
@@ -920,3 +925,54 @@ class TraphormerBCLightningModule(pl.LightningModule):
     def validation_epoch_end(self, outputs) -> None:
         losses = torch.stack([loss for loss in outputs], 0)
         self.log('valid_loss', losses.mean())
+
+
+
+class TOsilv1(BaseLightningModule):
+
+    def _build_network(self):
+        enc_config = utils.ParamDict(
+            hidden_dim=self.conf.hidden_dim,
+            obs_shape=(self.conf.obs_dim, ),
+            ac_dim=self.conf.ac_dim,
+            max_ep_len=self.conf.max_ep_len,
+        )
+        self.encoder = TrajBERT(enc_config)
+        self.goal_dim = self.conf.goal_dim
+        self.goal_emb = nn.Linear(self.conf.hidden_dim, self.goal_dim)
+
+        dec_config = utils.ParamDict(
+            hidden_dim=self.conf.hidden_dim,
+            obs_dim=self.conf.obs_dim,
+            ac_dim=self.conf.ac_dim,
+            goal_dim=self.conf.goal_dim,
+        )
+
+        self.decoder = GCBCv2(dec_config)
+
+    def get_task_emb(self, context_s, context_a, context_mask):
+        enc_output = self.encoder(context_s, context_a, context_mask)
+        hstate = enc_output.last_hidden_state[:, 0]
+        task_emb = self.goal_emb(hstate)
+        return task_emb
+
+    def ff(self, batch, compute_loss=True):
+        context_s       = batch['context_s']
+        context_a       = batch['context_a']
+        context_mask    = batch['attention_mask']
+
+        task_emb = self.get_task_emb(context_s, context_a, context_mask)
+
+        target_s    = batch['target_s']
+        target_a    = batch['target_a']
+        ptr         = batch['ptr']
+
+        task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
+        ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+
+        if compute_loss:
+            loss, pred_ac = ret
+            return loss, pred_ac
+
+        return ret
+

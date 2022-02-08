@@ -32,6 +32,9 @@ class OsilDataCollector:
             'avg_ep_len': float(np.mean(self.ep_lens)),
             'max_ep_len': int(np.max(self.ep_lens)),
             'min_ep_len': int(np.min(self.ep_lens)),
+            'num_tasks': len(self.data),
+            'avg_num_task_variations': float(np.mean([len(v) for v in self.data.values()])),
+            'std_num_task_variations': float(np.std([len(v) for v in self.data.values()])),
         }
 
     def npify(self, container):
