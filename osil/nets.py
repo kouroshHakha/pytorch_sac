@@ -32,17 +32,17 @@ class BaseLightningModule(pl.LightningModule):
         raise NotImplementedError
 
     def training_step(self, batch):
-        loss, _ = self.ff(batch[0], compute_loss=True)
-        self.log('train_loss_batch', loss)
-        return loss
+        ret = self.ff(batch[0], compute_loss=True)
+        self.log('train_loss_batch', ret['loss'])
+        return ret['loss']
 
     def training_epoch_end(self, outputs) -> None:
         losses = torch.stack([item['loss'] for item in outputs], 0)
         self.log('train_loss_epoch', losses.mean(), prog_bar=True)
 
     def validation_step(self, batch, batch_idx):
-        loss, _, = self.ff(batch, compute_loss=True)
-        return loss
+        ret = self.ff(batch, compute_loss=True)
+        return ret['loss']
 
     def validation_epoch_end(self, outputs) -> None:
         losses = torch.stack([loss for loss in outputs], 0)
@@ -208,10 +208,11 @@ class GCBCv2(BaseLightningModule):
     def ff(self, batch, compute_loss=True):
         x, goal, y = batch
         pred_ac = self(x, goal)
+        ret = dict(pred_ac=pred_ac)
         if compute_loss:
             loss = self.bc_loss(pred_ac, y)
-            return loss, pred_ac
-        return pred_ac
+            ret['loss']=loss
+        return ret
 
     def forward(self, x, g):
         assert x.shape[-1] == self.conf.obs_dim, 'state shape is not correct.'
@@ -969,10 +970,144 @@ class TOsilv1(BaseLightningModule):
 
         task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
         ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+        return ret
 
-        if compute_loss:
-            loss, pred_ac = ret
-            return loss, pred_ac
+
+class TOsilSemisupervised(TOsilv1):
+
+    def _init_conf(self, conf):
+        super()._init_conf(conf)
+        self.decoder_loss_weight = conf.decoder_loss_weight
+        self.mse = nn.MSELoss()
+
+    def _build_network(self):
+        super()._build_network()
+        self._state_mask_token = nn.Parameter(torch.randn(self.conf.obs_dim), requires_grad=True)
+        self._action_mask_token = nn.Parameter(torch.randn(self.conf.ac_dim), requires_grad=True)
+        self.state_output_proj = nn.Linear(self.conf.hidden_dim, self.conf.obs_dim)
+        self.action_output_proj = nn.Linear(self.conf.hidden_dim, self.conf.ac_dim)
+
+    def _mask_input(self, states, actions, attn_mask):
+        """
+        We chose to mask states and actions identically
+        TODO: should we introduce the masked token in the embedding space or in the input space?
+        """
+        masked_states = states.clone()
+        masked_actions = actions.clone()
+
+        # mask those that are not padded (attm_mask = 0)
+        B, T, _ = states.size()
+        mask_rate = self.conf.mask_rate
+        # mask p percent of the input tokens for each batch
+        # mask = 0 means no attention
+        mask_canvas = torch.zeros(B, T).long().to(device=states.device)
+        total_steps = attn_mask.sum()
+        masked_time_steps = (torch.rand(total_steps, device=states.device) < mask_rate).long()
+        mask_canvas[attn_mask.bool()] = masked_time_steps
+
+        # make sure the first and last timesteps are part of the input seq
+        mask_canvas[:, 0] = 0
+        mask_canvas[torch.arange(B), attn_mask.sum(-1) - 1] = 0
+
+        masked_states[mask_canvas.bool()] = self._state_mask_token.repeat(mask_canvas.sum(), 1)
+        masked_actions[mask_canvas.bool()] = self._action_mask_token.repeat(mask_canvas.sum(), 1)
+
+        return masked_states, masked_actions, mask_canvas, mask_canvas
+
+    def ff_encoder(self, batch, compute_loss=True):
+        states       = batch['context_s']
+        actions      = batch['context_a']
+        attn_mask    = batch['attention_mask']
+
+        masked_states, masked_actions, masked_state_inds, masked_action_inds = self._mask_input(states, actions, attn_mask)
+        encoder_output = self.encoder(masked_states, masked_actions, attn_mask)
+        
+        # the first token is cls then it's a state and then it's an action
+        state_embs = encoder_output.last_hidden_state[:, 1::2]
+        action_embs = encoder_output.last_hidden_state[:, 2::2]
+
+        # pass the masked embeddings through a prediction head
+        predicted_states = self.state_output_proj(state_embs[masked_state_inds.bool()])
+        predicted_actions = self.action_output_proj(action_embs[masked_action_inds.bool()])
+
+        ret = dict(encoder_output=encoder_output)
+        if compute_loss:        
+            target_states = states[masked_state_inds.bool()]
+            target_actions = actions[masked_action_inds.bool()]
+
+            # compute individual action and state prediction errors and sum them up
+            loss_actions = self.mse(target_actions, predicted_actions)
+            loss_states = self.mse(target_states, predicted_states)
+            loss = loss_actions + loss_states  
+
+            ret.update(
+                loss=loss,
+                loss_actions=loss_actions,
+                loss_states=loss_states
+            )
 
         return ret
+
+    def ff_decoder(self, batch, compute_loss=True):
+        context_s       = batch['context_s']
+        context_a       = batch['context_a']
+        context_mask    = batch['attention_mask']
+
+        task_emb = self.get_task_emb(context_s, context_a, context_mask)
+
+        target_s    = batch['target_s']
+        target_a    = batch['target_a']
+        ptr         = batch['ptr']
+
+        task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
+        ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+        return ret
+
+    def ff(self, batch, compute_loss=True):
+        # compute the Masked trajectory modeling loss
+        encoder_loss = 0
+        if 'unpaired' in batch:
+            encoder_output = self.ff_encoder(batch['unpaired'], compute_loss=compute_loss)
+            encoder_loss = encoder_output['loss']
+
+        # compute the loss from paired trajectories
+        decoder_loss = 0
+        if 'paired' in batch:
+            decoder_output = self.ff_decoder(batch['paired'], compute_loss=compute_loss)
+            decoder_loss = decoder_output['loss']
+        
+        # compute the total training loss
+        loss = (1 - self.decoder_loss_weight) * encoder_loss + self.decoder_loss_weight * decoder_loss
+        
+        return dict(loss=loss, encoder_loss=encoder_loss.detach(), decoder_loss=decoder_loss.detach())
+
+    def training_step(self, batch, batch_idx):
+        ret = self.ff(batch, compute_loss=True)
+        self.log('train_loss_batch', ret['loss'])
+        return ret
+
+    def training_epoch_end(self, outputs) -> None:
+        train_losses = torch.stack([item['loss'] for item in outputs], 0)
+        train_enc_losses = torch.stack([item['encoder_loss'] for item in outputs], 0)
+        train_dec_losses = torch.stack([item['decoder_loss'] for item in outputs], 0)
+        self.log('train_loss_epoch', train_losses.mean(), prog_bar=True)
+        self.log('train_enc_loss_epoch', train_enc_losses.mean(), prog_bar=False)
+        self.log('train_dec_loss_epoch', train_dec_losses.mean(), prog_bar=False)
+
+    def validation_step(self, batch, batch_idx):
+        batch = dict(paired=batch, unpaired=batch)
+        ret = self.ff(batch, compute_loss=True)
+        return ret
+
+    def validation_epoch_end(self, outputs) -> None:
+        valid_losses = torch.stack([item['loss'] for item in outputs], 0)
+        valid_enc_losses = torch.stack([item['encoder_loss'] for item in outputs], 0)
+        valid_dec_losses = torch.stack([item['decoder_loss'] for item in outputs], 0)
+        # this should be compared to training loss to monitor overfitting
+        self.log('valid_loss_epoch', valid_losses.mean(), prog_bar=True)
+        # to keep things consistent with other models valid_loss should 
+        # measure the decoding capability
+        self.log('valid_loss', valid_dec_losses.mean())
+        self.log('valid_enc_loss_epoch', valid_enc_losses.mean())
+        self.log('valid_dec_loss_epoch', valid_dec_losses.mean())
 

@@ -244,7 +244,7 @@ class EvaluatorPointMazeBase:
         successes = []
         example_trajs = []
         print(f'Running evaluation on {len(self.test_cases)} test cases ...')
-        for test_case in self.test_cases:
+        for test_case in tqdm.tqdm(self.test_cases):
 
             demo_state      = test_case['context_s']
             demo_action     = test_case['context_a']
@@ -268,14 +268,15 @@ class EvaluatorPointMazeBase:
             while not done and step < 128:
                 # step through the policy
                 a = self._get_action(s, goal)
-                # a = test_case['target_a'][a_idx]
+                # a = env.action_space.sample()
 
                 visited_xys.append(s[:2])
                 ns, _, _, _ = env.step(a)
 
-                if np.linalg.norm(ns[:2] - demo_state[-1][:2]) < 0.1:
+                if np.linalg.norm(ns[:2] - demo_state[-1][:2]) < 0.15:
                     done = True
-                else:
+                # else:
+                if not done:
                     s = ns
                     step += 1
 
@@ -284,6 +285,7 @@ class EvaluatorPointMazeBase:
                 demo_xy=demo_state[:, :2],
                 gt_xy=test_case['target_s'][:, :2],
             ))
+
             successes.append(done)
 
         write_yaml(self.output_dir / 'summary.yaml', dict(success_rate=float(np.mean(successes))))
@@ -315,7 +317,7 @@ class EvaluatorPointMazeBase:
         num_fails = len(successes) - sum(successes)
         if num_fails > 0:
             print('Plotting failed examples ...')
-            T = min(16, len(successes) - sum(successes))
+            T = min(16, num_fails)
             nrows = int(T ** 0.5)
             ncols = -(-T // nrows) # cieling
             plot_path = self.output_dir / f'examples_{T}_failed.png'
@@ -328,10 +330,11 @@ class EvaluatorPointMazeBase:
             for idx, traj in enumerate(example_trajs):
                 if successes[idx]:
                     continue
-                elif count == T:
+                if count == T:
                     break
                 policy_xy = traj['visited_xys']
                 demo_xy = traj['demo_xy']
+                gt_xy = traj['gt_xy']
 
                 axes[count].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy', alpha=0.5)
                 axes[count].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo', alpha=0.5)

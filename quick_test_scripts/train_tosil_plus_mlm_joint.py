@@ -1,4 +1,5 @@
 
+from functools import partial
 from gc import callbacks
 import warnings
 import numpy as np
@@ -8,18 +9,16 @@ from pathlib import Path
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import Subset
 
-from utils import write_pickle, write_yaml
-
 print(f'Workspace: {Path.cwd()}')
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from osil.data import GCPM, TestOsilPM
-from osil.nets import GCBCv2
+from osil.nets import TOsilSemisupervised
 from osil.utils import ParamDict
 from osil.eval import EvaluatorPointMazeBase
+from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -27,69 +26,29 @@ register_pdb_hook()
 from torch.utils.data import Dataset
 import torch
 import d4rl; import gym
-
 from osil_gen_data.data_collector import OsilDataCollector
 
-class PointmassBCDataset(Dataset):
-
-    def __init__(
-        self,
-        data_path,
-        mode='train', # valid / test are also posssible
-        seed=0,
-    ):
-        SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
-
-        self.data_path = Path(data_path)
-        collector = OsilDataCollector.load(data_path)
-        self.raw_data = collector.data
-
-        task_name_list = []
-        for task_id in self.raw_data:
-            for var_id in self.raw_data[task_id]:
-                task_name_list.append((task_id, var_id))
-        np.random.seed(seed)
-        inds = np.random.permutation(np.arange(len(task_name_list)))
-
-        sratio, eratio = SPLITS[mode]
-        s = int(sratio * len(inds))
-        e = int(eratio * len(inds))
-        self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
-        
-        states, actions, targets = [], [], []
-        for task_id, task in self.raw_data.items():
-            for var_id, var in task.items():
-                if (task_id, var_id) not in self.allowed_ids:
-                    continue
-                for ep in var:
-                    states.append(ep['state'])
-                    actions.append(ep['action'])
-                    targets.append(ep['target'])
-
-        self.states = np.concatenate(states, 0)
-        self.actions = np.concatenate(actions, 0)
-        self.targets = np.concatenate(targets, 0)
-        
-    def __len__(self):
-        return len(self.states)
-
-    def __getitem__(self, idx):
-        x = torch.as_tensor(self.states[idx], dtype=torch.float)
-        g = torch.as_tensor(self.targets[idx], dtype=torch.float)
-        y = torch.as_tensor(self.actions[idx], dtype=torch.float)
-
-        return x, g, y
 
 class Evaluator(EvaluatorPointMazeBase):
 
     def _get_goal(self, demo_state, demo_action):
-        return demo_state[-1, :2]
+        device = self.agent.device
+        batch = dict(
+            context_s=torch.as_tensor(demo_state).float().to(device),
+            context_a=torch.as_tensor(demo_action).float().to(device),
+        )
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding)
+        with torch.no_grad():
+            goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
+            goal = goal.squeeze(0)
+
+        return goal.detach().cpu().numpy()
 
     def _get_action(self, state, goal):
         device = self.agent.device
         state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
         goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
-        pred_ac = self.agent(state_tens, goal_tens)
+        pred_ac = self.agent.decoder(state_tens, goal_tens)
         a = pred_ac.squeeze(0).detach().cpu().numpy()
         return a
 
@@ -99,15 +58,20 @@ def _parse_args():
     parser = argparse.ArgumentParser()
     # basic common params
     parser.add_argument('--seed', default=0, type=int)
+    parser.add_argument('--batch_size', '-bs', default=64, type=int)
     parser.add_argument('--weight_decay', '-wc', default=1e-4, type=float)
-    parser.add_argument('--hidden_dim', '-hd', default=256, type=int)
-    parser.add_argument('--batch_size', '-bs', default=1024, type=int)
     parser.add_argument('--lr', '-lr', default=3e-4, type=float)
     parser.add_argument('--device', default='cuda', type=str)
     parser.add_argument('--max_epochs', type=int)
     parser.add_argument('--max_steps', default=-1, type=int)
     parser.add_argument('--dataset_path', type=str)
     parser.add_argument('--env_name', type=str)
+    # model parameters
+    parser.add_argument('--hidden_dim', '-hd', default=256, type=int)
+    parser.add_argument('--goal_dim', '-gd', default=256, type=int)
+    parser.add_argument('--max_padding', default=128, type=int)
+    parser.add_argument('--decoder_loss_weight', '-dw', default=0.5, type=float)
+    parser.add_argument('--mask_rate', default=0.75, type=float)
     # other params
     parser.add_argument('--frac', '-fr', default=1.0, type=float)
     # checkpoint resuming and testing
@@ -123,39 +87,41 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'gcbcv2_pm'
+    exp_name = f'tosil+mtm_pm'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
-    # assert pargs.trg_size == 1, 'For BC trg_size should be 1'
-    # dset = GCPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size, goal_type=pargs.goal_type)
-    # train_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize))
-    # valid_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize, len(dset)))
-
     data_path = pargs.dataset_path
-    dset = PointmassBCDataset(data_path=data_path, mode='train')
-    train_dataset = Subset(dset, indices=np.arange(int(len(dset)*pargs.frac)))
-    valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
+    dset_paired = PointMazePairedDataset(data_path=data_path, mode='train')
+    train_dataset_paired = Subset(dset_paired, indices=np.arange(int(len(dset_paired)*pargs.frac)))
+    valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
     
-    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=40)
-    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16)
-    obs, goal, act = train_dataset[0]
+    # for unpaired data we still create a paired dataset object but ignore it's target_s, target_a entries
+    train_dataset_unpaired = PointMazePairedDataset(data_path=data_path, mode='train')
+
+    collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
+    tloader_paired = DataLoader(train_dataset_paired, shuffle=True, batch_size=pargs.batch_size, num_workers=20, collate_fn=collate_fn)
+    tloader_unpaired = DataLoader(train_dataset_unpaired, shuffle=True, batch_size=pargs.batch_size, num_workers=20, collate_fn=collate_fn)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16, collate_fn=collate_fn)
+    batch_elem = train_dataset_paired[0]
 
     config = ParamDict(
         hidden_dim=pargs.hidden_dim,
-        obs_dim=obs.shape[-1],
-        ac_dim=act.shape[-1],
-        goal_dim=goal.shape[-1],
+        obs_dim=batch_elem['context_s'].shape[-1],
+        max_ep_len=pargs.max_padding,
+        ac_dim=batch_elem['context_a'].shape[-1],
+        goal_dim=pargs.goal_dim,
         lr=pargs.lr,
         wd=pargs.weight_decay,
+        decoder_loss_weight=pargs.decoder_loss_weight, 
+        mask_rate=pargs.mask_rate,
     )
 
-    ######## check model's input to output dependency
     args_var = vars(pargs)
     ckpt = args_var.get('ckpt', '')
     resume = args_var.get('resume', False)
     
-    agent = GCBCv2.load_from_checkpoint(ckpt) if ckpt else GCBCv2(config)
+    agent = TOsilSemisupervised.load_from_checkpoint(ckpt) if ckpt else TOsilSemisupervised(config)
     agent = agent.to(device=pargs.device)
 
     train = (ckpt and resume) or not ckpt
@@ -193,19 +159,18 @@ def main(pargs):
 
     eval_output_dir = ''
     if train:
-        trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
+        train_dataloaders = {'paired': tloader_paired, 'unpaired': tloader_unpaired}
+        trainer.fit(agent, train_dataloaders=train_dataloaders, val_dataloaders=vloader)
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
     else:
         eval_output_dir = pargs.eval_path
         if ckpt and not pargs.eval_path:
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
-    
 
-    test_dataset = PointmassBCDataset(data_path=data_path, mode='test')
+    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
     evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
-
 
 
 if __name__ == '__main__':

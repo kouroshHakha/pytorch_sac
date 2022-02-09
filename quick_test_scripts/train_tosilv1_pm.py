@@ -20,6 +20,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from osil.nets import TOsilv1
 from osil.utils import ParamDict
 from osil.eval import EvaluatorPointMazeBase
+from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -28,89 +29,6 @@ from torch.utils.data import Dataset
 import torch
 import d4rl; import gym
 
-from osil_gen_data.data_collector import OsilDataCollector
-
-
-class PointmassBCDataset(Dataset):
-
-    def __init__(
-        self,
-        data_path,
-        mode='train', # valid / test are also posssible
-        seed=0,
-    ):
-        SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
-
-        self.data_path = Path(data_path)
-        collector = OsilDataCollector.load(data_path)
-        self.raw_data = collector.data
-
-        task_name_list = []
-        ep_len_list = []
-        for task_id in self.raw_data:
-            for var_id in self.raw_data[task_id]:
-                task_name_list.append((task_id, var_id))
-                ep_len_list.append(len(self.raw_data[task_id][var_id]))
-        np.random.seed(seed)
-        inds = np.random.permutation(np.arange(len(task_name_list)))
-        
-        sratio, eratio = SPLITS[mode]
-        s = int(sratio * len(inds))
-        e = int(eratio * len(inds))
-        assert e > s, 'Not enough data is present for proper split'
-        self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
-        self.n_episodes = sum([ep_len_list[int(i)] for i in inds[s:e]])
-        
-    def __len__(self):
-        return self.n_episodes
-
-    def __getitem__(self, index):
-        idx = index % len(self.allowed_ids)
-        task_id, var_id = self.allowed_ids[idx]
-        episodes = self.raw_data[task_id][var_id]
-
-        c_idx, t_idx = np.random.randint(len(episodes), size=(2,))
-
-        return dict(
-            context_s=torch.as_tensor(episodes[c_idx]['state'], dtype=torch.float),
-            context_a=torch.as_tensor(episodes[c_idx]['action'], dtype=torch.float),
-            target_s=torch.as_tensor(episodes[t_idx]['state'], dtype=torch.float),
-            target_a=torch.as_tensor(episodes[t_idx]['action'], dtype=torch.float)
-        )
-
-def custom_collate(batch, padding=128):
-    # Note: we will have dynamic batch size for training the MLP part which should be ok? not sure!
-    # you should use torch.repeat_interleave(x, ptr, dim=0) to repeat 
-    # x with a frequency of values in ptr across dim=0 (this is needed in the decoder training)
-    elem = batch[0]
-    ret = {}
-    attn_mask = None
-    for key in elem:
-        if key.startswith('context'):
-            # zero pad and then stack + create attention mask
-            token_shape = (len(batch), padding) + elem[key].shape[1:]
-            ret[key] = torch.zeros(token_shape, dtype=elem[key].dtype, device=elem[key].device) 
-            if attn_mask is None:
-                attn_mask = torch.zeros(token_shape[:2], dtype=torch.long, device=elem[key].device)
-            for e_idx, e in enumerate(batch):
-                # left padding
-                seq_len = min(len(e[key]), padding)
-                if seq_len != len(e[key]):
-                    print(f'Cutting off a trajectory (length = {len(e[key])}) because it is too long!')
-                ret[key][e_idx, :seq_len] = e[key][:seq_len]
-                attn_mask[e_idx, :seq_len] = 1
-            
-            if 'attention_mask' not in ret and attn_mask is not None:
-                # makes sure we only create attn_mask once based on c_s or c_a
-                ret['attention_mask'] = attn_mask
-
-        elif key.startswith('target'):
-            ret[key] = torch.cat([e[key].view(-1, elem[key].shape[-1]) for e in batch], 0)
-            if 'ptr' not in ret:
-                ret['ptr'] = torch.tensor([len(e[key]) for e in batch])
-
-    return ret
-    
 
 class Evaluator(EvaluatorPointMazeBase):
 
@@ -120,7 +38,7 @@ class Evaluator(EvaluatorPointMazeBase):
             context_s=torch.as_tensor(demo_state).float().to(device),
             context_a=torch.as_tensor(demo_action).float().to(device),
         )
-        batch = custom_collate([batch], padding=self.conf.max_padding)
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding)
         with torch.no_grad():
             goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
             goal = goal.squeeze(0)
@@ -172,11 +90,11 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    dset = PointmassBCDataset(data_path=data_path, mode='train')
+    dset = PointMazePairedDataset(data_path=data_path, mode='train')
     train_dataset = Subset(dset, indices=np.arange(int(len(dset)*pargs.frac)))
-    valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
+    valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
     
-    collate_fn = partial(custom_collate, padding=pargs.max_padding)
+    collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
     tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=40, collate_fn=collate_fn)
     vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16, collate_fn=collate_fn)
     batch_elem = train_dataset[0]
@@ -264,7 +182,7 @@ def main(pargs):
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
 
-    test_dataset = PointmassBCDataset(data_path=data_path, mode='test')
+    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
     evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
 
