@@ -11,11 +11,19 @@ from time import sleep
 
 from osil_gen_data.data_collector import OsilDataCollector
 
+def get_random_xy():
+    r = np.random.rand(2)
+    # TODO: These numbers are for maze2d-open
+    high = np.array([4, 6])
+    low = np.array([0, 0])
+    return r * (high - low) + low
+
 dist_threshold = 4.0
 def get_rst(env):
-    s = env.reset()
+    s = env.reset_to_location(get_random_xy())
     while np.linalg.norm(s[:2] - env._target, 2) > dist_threshold:
-        s = env.reset()
+        # print('trying again ... ', s[:2], env._target)
+        s = env.reset_to_location(get_random_xy())
     return s
 
 def main():
@@ -37,6 +45,7 @@ def main():
 
     controller = waypoint_controller.WaypointController(maze)
     env = maze_model.MazeEnv(maze)
+    target_list = np.stack([np.array(loc) for loc in env.empty_and_goal_locations], 0).astype(env.observation_space.dtype) 
 
     env.set_target()
     s = env.reset()
@@ -46,19 +55,19 @@ def main():
     path_name = f'./{args.env_name}_{args.output_suffix}' if not args.noisy else f'./{args.env_name}_{args.output_suffix}_noisy'
     data = OsilDataCollector(path=path_name)
     for task_idx in [0]: #tqdm(range(args.num_tasks)):
-        for var_idx in range(args.num_variation_per_task):
+        for var_idx in range(len(target_list)):
             ep_count = 0
-            target_list = []
-            for _ in range(task_idx + 1):
-                env.set_target()
-                target_list.append(env.get_target())
+            # target_list = []
+            # for _ in range(task_idx + 1):
+            #     env.set_target()
+            #     target_list.append(env.get_target())
 
             with tqdm(total=args.num_demos_per_variation, desc=f'[var_id={var_idx}]') as tbar:                
                 while ep_count < args.num_demos_per_variation:
 
                     # start a new episode 
                     # tgt = np.array([2.94510641, 0.9043638])
-                    env.set_target(target_list[0])
+                    env.set_target(target_list[var_idx])
                     s = get_rst(env)
                     target_cnt = 0
                     # s = np.array([3.19845818e+00, 7.98728805e+00, -1.37212445e-03, -2.61658096e-01])
@@ -71,7 +80,7 @@ def main():
                         
                         position = s[0:2]
                         velocity = s[2:4]
-                        env.set_target(target_list[target_cnt])
+                        env.set_target(target_list[var_idx])
                         act, done = controller.get_action(position, velocity, env._target)
                         if args.noisy:
                             act = act + np.random.randn(*act.shape)*0.5

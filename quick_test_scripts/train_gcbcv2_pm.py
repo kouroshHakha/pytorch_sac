@@ -37,18 +37,20 @@ class PointmassBCDataset(Dataset):
         data_path,
         mode='train', # valid / test are also posssible
         seed=0,
+        nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
     ):
         SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
         self.data_path = Path(data_path)
         collector = OsilDataCollector.load(data_path)
         self.raw_data = collector.data
+        self.nshots_per_task = nshots_per_task
 
         task_name_list = []
         for task_id in self.raw_data:
             for var_id in self.raw_data[task_id]:
                 task_name_list.append((task_id, var_id))
-        np.random.seed(seed)
+        np.random.seed(seed+10)
         inds = np.random.permutation(np.arange(len(task_name_list)))
 
         sratio, eratio = SPLITS[mode]
@@ -57,14 +59,18 @@ class PointmassBCDataset(Dataset):
         self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
         
         states, actions, targets = [], [], []
-        for task_id, task in self.raw_data.items():
-            for var_id, var in task.items():
-                if (task_id, var_id) not in self.allowed_ids:
-                    continue
-                for ep in var:
-                    states.append(ep['state'])
-                    actions.append(ep['action'])
-                    targets.append(ep['target'])
+        for task_id, var_id in self.allowed_ids:
+            episodes = self.raw_data[task_id][var_id]
+            max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
+            if max_ep_idx < 2:
+                print(f'You need at least two examples per task to make an osil statement, using two instead.')
+                max_ep_idx = 2
+            if max_ep_idx > len(episodes):
+                print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
+            for ep in episodes[:max_ep_idx]:
+                states.append(ep['state'])
+                actions.append(ep['action'])
+                targets.append(ep['target'])
 
         self.states = np.concatenate(states, 0)
         self.actions = np.concatenate(actions, 0)
@@ -109,7 +115,9 @@ def _parse_args():
     parser.add_argument('--dataset_path', type=str)
     parser.add_argument('--env_name', type=str)
     # other params
-    parser.add_argument('--frac', '-fr', default=1.0, type=float)
+    parser.add_argument('--num_shots', default=-1, type=int, 
+                        help='number of shots per each task variation \
+                            (-1 means max number of shots available in the dataset)')
     # checkpoint resuming and testing
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
@@ -127,18 +135,43 @@ def main(pargs):
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
-    # assert pargs.trg_size == 1, 'For BC trg_size should be 1'
-    # dset = GCPM(ctx_size=pargs.ctx_size, trg_size=pargs.trg_size, goal_type=pargs.goal_type)
-    # train_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize))
-    # valid_dataset = Subset(dset, indices=np.arange(len(dset) - pargs.val_dsize, len(dset)))
-
     data_path = pargs.dataset_path
-    dset = PointmassBCDataset(data_path=data_path, mode='train')
-    train_dataset = Subset(dset, indices=np.arange(int(len(dset)*pargs.frac)))
+    train_dataset = PointmassBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
     valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
+    test_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
+
+
+    # ###### visualize the data
+    # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=True, batch_size=len(train_dataset), num_workers=0)))
+    # vbatch_all = next(iter(DataLoader(valid_dataset, shuffle=True, batch_size=len(valid_dataset), num_workers=0)))
+    # t_state, t_goal, t_action = tbatch_all
+    # v_state, v_goal, v_action = vbatch_all
+
+    # # plot the distribution of states and compare it to validation
+    # plt.close()
+    # plt.scatter(t_state[:, 0], t_state[:, 1], color='blue', alpha=0.5, s=5, label='train')
+    # plt.scatter(v_state[:, 0], v_state[:, 1], color='orange', alpha=0.5, s=5, label='valid')
+    # plt.xlim(0, 4)
+    # plt.ylim(0, 6)
+    # plt.legend()
+    # plt.savefig('debug_gcbcv2_xy_train_valid.png')
+
+    # from utils import read_pickle
+    # example_trajs = read_pickle('wandb_logs/osil/5p1rsl4m/checkpoints/example_trajs.pkl')
+    # rollouts_100 = np.concatenate([exmp['visited_xys'] for exmp in example_trajs[:100]])
+    # rollouts_200 = np.concatenate([exmp['visited_xys'] for exmp in example_trajs[100:]])
+    # plt.close()
+    # plt.scatter(rollouts_100[:, 0], rollouts_100[:, 1], color='blue', alpha=0.5, s=5, label='tested rollouts first 100')
+    # plt.scatter(rollouts_200[:, 0], rollouts_200[:, 1], color='orange', alpha=0.5, s=5, label='tested rollouts second 100')
+    # plt.xlim(0, 4)
+    # plt.ylim(0, 6)
+    # plt.legend()
+    # plt.savefig('debug_gcbcv2_xy_tested_rollouts2.png')
+
+    # breakpoint()
     
-    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=40)
-    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16)
+    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0)
     obs, goal, act = train_dataset[0]
 
     config = ParamDict(
@@ -195,6 +228,7 @@ def main(pargs):
     if train:
         trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+        agent = agent.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     else:
         eval_output_dir = pargs.eval_path
         if ckpt and not pargs.eval_path:
@@ -202,7 +236,6 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
 
-    test_dataset = PointmassBCDataset(data_path=data_path, mode='test')
     evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
 

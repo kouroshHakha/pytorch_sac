@@ -71,7 +71,9 @@ def _parse_args():
     parser.add_argument('--dataset_path', type=str)
     parser.add_argument('--env_name', type=str)
     # other params
-    parser.add_argument('--frac', '-fr', default=1.0, type=float)
+    parser.add_argument('--num_shots', default=-1, type=int, 
+                        help='number of shots per each task variation \
+                            (-1 means max number of shots available in the dataset)')
     # checkpoint resuming and testing
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
@@ -90,16 +92,16 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    dset = PointMazePairedDataset(data_path=data_path, mode='train')
-    train_dataset = Subset(dset, indices=np.arange(int(len(dset)*pargs.frac)))
+    train_dataset = PointMazePairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
     valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
-    
+    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
+
     collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
-    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=40, collate_fn=collate_fn)
-    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16, collate_fn=collate_fn)
+    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn, pin_memory=True)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn, pin_memory=True)
     batch_elem = train_dataset[0]
 
-    # ### visualize data
+    ### visualize data
     # K = 16
     # nrows = int(K ** 0.5)
     # ncols = -(-K // nrows) # cieling
@@ -116,10 +118,34 @@ def main(pargs):
     #     axes[i].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='context')
     #     axes[i].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='context_g')
     #     axes[i].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='target_g')
+    #     axes[i].set_xlim(0, 4)
+    #     axes[i].set_ylim(0, 6)
 
     # plt.legend()
     # plt.tight_layout()
     # plt.savefig('tosil_data.png', dpi=250)
+
+    # plt.close()
+    # _, axes = plt.subplots(1, 1, figsize=(15, 8), squeeze=False)
+    # axes = axes.flatten()
+    # ax = axes[0]
+
+    # for i in range(len(train_dataset)):
+    #     sample = train_dataset[i]
+    #     demo_xy = sample['context_s'][:, :2].numpy()
+    #     ax.plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='blue', linewidth=1, label='train')
+    #     ax.scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green')
+
+    # for i in range(len(valid_dataset)):
+    #     sample = valid_dataset[i]
+    #     demo_xy = sample['context_s'][:, :2].numpy()
+    #     ax.plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='orange', linewidth=1, label='valid')
+    #     ax.scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='red')
+
+    # ax.set_xlim(0, 4)
+    # ax.set_ylim(0, 6)
+
+    # plt.savefig('debug_tosilv2_train_valid.png', dpi=250)
     # breakpoint()
 
     config = ParamDict(
@@ -176,13 +202,13 @@ def main(pargs):
     if train:
         trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+        agent = agent.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     else:
         eval_output_dir = pargs.eval_path
         if ckpt and not pargs.eval_path:
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
 
-    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
     evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
 

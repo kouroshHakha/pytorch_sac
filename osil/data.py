@@ -215,6 +215,7 @@ class PointMazePairedDataset(Dataset):
         data_path,
         mode='train', # valid / test are also posssible
         seed=0,
+        nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
     ):
         SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
@@ -227,8 +228,15 @@ class PointMazePairedDataset(Dataset):
         for task_id in self.raw_data:
             for var_id in self.raw_data[task_id]:
                 task_name_list.append((task_id, var_id))
-                ep_len_list.append(len(self.raw_data[task_id][var_id]))
-        np.random.seed(seed)
+                episodes = self.raw_data[task_id][var_id]
+                max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
+                if max_ep_idx < 2:
+                    print(f'You need at least two examples per task to make an osil statement, using two instead.')
+                    max_ep_idx = 2
+                if max_ep_idx > len(episodes):
+                    print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
+                ep_len_list.append(max_ep_idx)
+        np.random.seed(seed+10)
         inds = np.random.permutation(np.arange(len(task_name_list)))
         
         sratio, eratio = SPLITS[mode]
@@ -236,7 +244,8 @@ class PointMazePairedDataset(Dataset):
         e = int(eratio * len(inds))
         assert e > s, 'Not enough data is present for proper split'
         self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
-        self.n_episodes = sum([ep_len_list[int(i)] for i in inds[s:e]])
+        self.ep_lens = [ep_len_list[int(i)] for i in inds[s:e]]
+        self.n_episodes = sum(self.ep_lens)
         
     def __len__(self):
         return self.n_episodes
@@ -246,7 +255,7 @@ class PointMazePairedDataset(Dataset):
         task_id, var_id = self.allowed_ids[idx]
         episodes = self.raw_data[task_id][var_id]
 
-        c_idx, t_idx = np.random.randint(len(episodes), size=(2,))
+        c_idx, t_idx = np.random.randint(self.ep_lens[idx], size=(2,))
 
         return dict(
             context_s=torch.as_tensor(episodes[c_idx]['state'], dtype=torch.float),

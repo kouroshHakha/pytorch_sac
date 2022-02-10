@@ -229,7 +229,6 @@ class EvaluatorPointMazeBase:
                     rst=episodes[rst_idx]['state'][0],
                 )
                 test_cases.append(test_dict)
-
         print('Preparation done.')
         return test_cases
 
@@ -308,6 +307,8 @@ class EvaluatorPointMazeBase:
             axes[idx].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
             axes[idx].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
             axes[idx].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
+            axes[idx].set_xlim([0, 4])
+            axes[idx].set_ylim([0, 6])
             set_spine_color(axes[idx], 'green' if successes[idx] else 'red')
         plt.legend()
         plt.tight_layout()
@@ -341,6 +342,8 @@ class EvaluatorPointMazeBase:
                 axes[count].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
                 axes[count].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
                 axes[count].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
+                axes[count].set_xlim([0, 4])
+                axes[count].set_ylim([0, 6])
                 count += 1
 
             plt.legend()

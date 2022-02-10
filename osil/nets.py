@@ -46,7 +46,7 @@ class BaseLightningModule(pl.LightningModule):
 
     def validation_epoch_end(self, outputs) -> None:
         losses = torch.stack([loss for loss in outputs], 0)
-        self.log('valid_loss', losses.mean())
+        self.log('valid_loss', losses.mean(), prog_bar=True)
 
 
 class Encoder(nn.Module):
@@ -170,7 +170,7 @@ class BC(pl.LightningModule):
 
     def validation_epoch_end(self, outputs) -> None:
         losses = torch.stack([loss for loss in outputs], 0)
-        self.log('valid_loss', losses.mean())
+        self.log('valid_loss', losses.mean(), prog_bar=True)
 
 
 
