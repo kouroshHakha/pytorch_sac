@@ -1,6 +1,5 @@
 
 from functools import partial
-from gc import callbacks
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
@@ -73,7 +72,10 @@ def _parse_args():
     parser.add_argument('--decoder_loss_weight', '-dw', default=0.5, type=float)
     parser.add_argument('--mask_rate', default=0.75, type=float)
     # other params
-    parser.add_argument('--frac', '-fr', default=1.0, type=float)
+    parser.add_argument('--num_shots', default=-1, type=int, 
+                        help='number of shots per each task variation \
+                            (-1 means max number of shots available in the dataset)')
+
     # checkpoint resuming and testing
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
@@ -92,17 +94,17 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    dset_paired = PointMazePairedDataset(data_path=data_path, mode='train')
-    train_dataset_paired = Subset(dset_paired, indices=np.arange(int(len(dset_paired)*pargs.frac)))
+    train_dataset_paired = PointMazePairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
     valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
+    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
     
     # for unpaired data we still create a paired dataset object but ignore it's target_s, target_a entries
     train_dataset_unpaired = PointMazePairedDataset(data_path=data_path, mode='train')
 
     collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
-    tloader_paired = DataLoader(train_dataset_paired, shuffle=True, batch_size=pargs.batch_size, num_workers=20, collate_fn=collate_fn)
-    tloader_unpaired = DataLoader(train_dataset_unpaired, shuffle=True, batch_size=pargs.batch_size, num_workers=20, collate_fn=collate_fn)
-    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=16, collate_fn=collate_fn)
+    tloader_paired = DataLoader(train_dataset_paired, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)
+    tloader_unpaired = DataLoader(train_dataset_unpaired, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)
+    vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)
     batch_elem = train_dataset_paired[0]
 
     config = ParamDict(
@@ -162,13 +164,13 @@ def main(pargs):
         train_dataloaders = {'paired': tloader_paired, 'unpaired': tloader_unpaired}
         trainer.fit(agent, train_dataloaders=train_dataloaders, val_dataloaders=vloader)
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+        agent = agent.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     else:
         eval_output_dir = pargs.eval_path
         if ckpt and not pargs.eval_path:
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
 
-    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
     evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
 

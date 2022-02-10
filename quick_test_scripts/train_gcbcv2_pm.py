@@ -38,6 +38,7 @@ class PointmassBCDataset(Dataset):
         mode='train', # valid / test are also posssible
         seed=0,
         nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
+        goal_dim=-1,
     ):
         SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
@@ -45,6 +46,9 @@ class PointmassBCDataset(Dataset):
         collector = OsilDataCollector.load(data_path)
         self.raw_data = collector.data
         self.nshots_per_task = nshots_per_task
+
+        # fake goal dim
+        self.goal_dim = goal_dim
 
         task_name_list = []
         for task_id in self.raw_data:
@@ -57,6 +61,7 @@ class PointmassBCDataset(Dataset):
         s = int(sratio * len(inds))
         e = int(eratio * len(inds))
         self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
+        foo = [task_name_list[i] for i in inds]
         
         states, actions, targets = [], [], []
         for task_id, var_id in self.allowed_ids:
@@ -70,7 +75,8 @@ class PointmassBCDataset(Dataset):
             for ep in episodes[:max_ep_idx]:
                 states.append(ep['state'])
                 actions.append(ep['action'])
-                targets.append(ep['target'])
+                # targets.append(ep['target'])
+                targets.append(np.tile(ep['state'][-1, :2], (len(ep['state']), 1)))
 
         self.states = np.concatenate(states, 0)
         self.actions = np.concatenate(actions, 0)
@@ -84,12 +90,21 @@ class PointmassBCDataset(Dataset):
         g = torch.as_tensor(self.targets[idx], dtype=torch.float)
         y = torch.as_tensor(self.actions[idx], dtype=torch.float)
 
+        if self.goal_dim != -1:
+            nrepeats = self.goal_dim // g.shape[-1]
+            g = torch.tile(g, (nrepeats, ))
+
         return x, g, y
 
 class Evaluator(EvaluatorPointMazeBase):
 
     def _get_goal(self, demo_state, demo_action):
-        return demo_state[-1, :2]
+        g = demo_state[-1, :2]
+        if self.conf.gd != -1:
+            nrepeats = self.conf.gd // g.shape[-1]
+            g = np.tile(g, (nrepeats, ))
+
+        return g
 
     def _get_action(self, state, goal):
         device = self.agent.device
@@ -118,6 +133,7 @@ def _parse_args():
     parser.add_argument('--num_shots', default=-1, type=int, 
                         help='number of shots per each task variation \
                             (-1 means max number of shots available in the dataset)')
+    parser.add_argument('--gd', '-gd', default=-1, type=int)
     # checkpoint resuming and testing
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
@@ -136,10 +152,10 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    train_dataset = PointmassBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
-    valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
-    test_dataset = PointmassBCDataset(data_path=data_path, mode='valid')
-
+    train_dataset = PointmassBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, goal_dim=pargs.gd)
+    valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid', goal_dim=pargs.gd)
+    test_dataset = PointmassBCDataset(data_path=data_path, mode='test', goal_dim=pargs.gd)
+    breakpoint()
 
     # ###### visualize the data
     # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=True, batch_size=len(train_dataset), num_workers=0)))

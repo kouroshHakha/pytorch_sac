@@ -977,7 +977,7 @@ class TOsilSemisupervised(TOsilv1):
 
     def _init_conf(self, conf):
         super()._init_conf(conf)
-        self.decoder_loss_weight = conf.decoder_loss_weight
+        self.decoder_loss_weight = self.conf.decoder_loss_weight
         self.mse = nn.MSELoss()
 
     def _build_network(self):
