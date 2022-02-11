@@ -32,6 +32,25 @@ import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
 
+
+"""
+# at decoder level we will have variable batch size, but that's ok
+# for probing: context_cls_id, target_cls_id
+# reconstruct target trajectory based on context_emb
+dict(
+    context_s=..., # sample from its random nearest neighbours
+    context_a=...,
+    context_class_id=...,
+    context_emb=...,
+    target_s=..., # index from trajectory
+    target_a=...,
+    target_class_id=...,
+    target_emb=...,
+)
+
+we can plot estimate of acc for picking the correct context_s, context_a as a function of epoch ...
+"""
+
 class PointmassEmbBCDataset(Dataset):
 
     def __init__(
@@ -71,19 +90,33 @@ class PointmassEmbBCDataset(Dataset):
         
         states_flat, actions_flat, target_flat, class_flat = [], [], [], []
         self.nn_s, self.nn_a = [], []
+
+        self.class_ids = []
+        self.states = []
+        self.actions = []
+        self.embs = []
+
+        # nearest neighbors per each trajectory
+        self.nn_s = []
+        self.nn_a = []
+        self.nn_class_ids = []
+        self.nn_embs = []
+
+
         for idx, (emb, state, action, class_id) in enumerate(zip(embs, states, actions, classes)):
             if class_id not in SPLITS[mode]:
                 continue
-            # states_flat += [s for s in state]
-            # actions_flat += [a for a in action]
-            # class_flat += [class_id for _ in state]
-            states_flat.append(state)
-            actions_flat.append(action)
-            class_flat.append(class_id)
+
+            self.states.append(state)
+            self.actions.append(action)
+            self.class_ids.append(class_id)
+            self.embs.append(emb)
 
             if self.goal_is_self_embedding:
-                # target_flat += [emb for _ in state]
-                target_flat.append(emb)
+                self.nn_s.append([state])
+                self.nn_a.append([action])
+                self.nn_class_ids.append([class_id])
+                self.nn_embs.append([emb])
             else:
                 if metric == 'euclidean':
                     dist = np.sqrt(((embs - embs[idx]) ** 2).sum(-1))
@@ -93,52 +126,75 @@ class PointmassEmbBCDataset(Dataset):
                     dist = (embs @ embs[idx].T) / norm_embs / norm_emb
                 dist[idx] = float('inf')
                 cand_inds = np.argsort(dist)[:k_neighbor]
-                # target_flat += [embs[cand_inds] for _ in state]
-                target_flat.append(embs[cand_inds])
 
-                self.nn_s.append([states[i] for i in cand_inds])
-                self.nn_a.append([actions[i] for i in cand_inds])
-        
-        # self.states = np.stack(states_flat, 0)
-        # self.actions = np.stack(actions_flat, 0)
-        # self.targets = np.stack(target_flat, 0)
-        # self.classes = np.stack(class_flat, 0)
+                c_s, c_a, c_cls_ids, c_embs = [], [], [], []
+                for k in cand_inds:
+                    c_s.append(states[k])
+                    c_a.append(actions[k])
+                    c_cls_ids.append(classes[k])
+                    c_embs.append(embs[k])
+                
+                self.nn_s.append(c_s)        
+                self.nn_a.append(c_a)        
+                self.nn_class_ids.append(c_cls_ids) 
+                self.nn_embs.append(c_embs) 
 
-        self.states = states_flat
-        self.actions = actions_flat
-        self.targets = target_flat
-        self.classes = class_flat
-        
     def __len__(self):
-        # return len(self.states)
         return len(self.states)
 
     def __getitem__(self, idx):
-        s = torch.as_tensor(self.states[idx], dtype=torch.float)
-        a = torch.as_tensor(self.actions[idx], dtype=torch.float)
+        t_s = torch.as_tensor(self.states[idx], dtype=torch.float)
+        t_a = torch.as_tensor(self.actions[idx], dtype=torch.float)
+        t_emb = torch.as_tensor(self.embs[idx], dtype=torch.float)
+        t_class_id = torch.as_tensor(self.class_ids[idx], dtype=torch.long)
 
-        # if self.targets.ndim == 2:
-        if self.targets[idx].ndim == 1:
-            g = torch.as_tensor(self.targets[idx], dtype=torch.float)
-        # elif self.targets.ndim == 3:
-        elif self.targets[idx].ndim == 2:
-            # rand_goal_idx = np.random.randint(self.targets[idx].shape[1])
-            rand_goal_idx = np.random.randint(len(self.targets[idx]))
-            # HACK: fixing the bad data temporarily
-            dist = np.linalg.norm(self.nn_s[idx][rand_goal_idx][-1, :2] - self.states[idx][-1, :2])
-            while dist > 0.2:
-                rand_goal_idx = np.random.randint(len(self.targets[idx]))
-                dist = np.linalg.norm(self.nn_s[idx][rand_goal_idx][-1, :2] - self.states[idx][-1, :2])
-            
-            g = torch.as_tensor(self.targets[idx][rand_goal_idx], dtype=torch.float)
+        num_neis = len(self.nn_s[idx])
+        rand_nei_idx = np.random.randint(num_neis)
 
-        return s, g, a
+        c_s = torch.as_tensor(self.nn_s[idx][rand_nei_idx], dtype=torch.float)
+        c_a = torch.as_tensor(self.nn_a[idx][rand_nei_idx], dtype=torch.float)
+        c_emb = torch.as_tensor(self.nn_embs[idx][rand_nei_idx], dtype=torch.float)
+        c_class_id = torch.as_tensor(self.nn_class_ids[idx][rand_nei_idx], dtype=torch.long)
+
+        # reconstruct target trajectory based on context_emb
+        return dict(
+            context_s=c_s, # sample from its random nearest neighbours
+            context_a=c_a,
+            context_class_id=c_class_id,
+            context_emb=c_emb,
+            target_s=t_s, # index from trajectory
+            target_a=t_a,
+            target_class_id=t_class_id,
+            target_emb=t_emb,
+        )
+
+class GCBCDatasetWrapper(Dataset):
+
+    def __init__(self, emb_dataset) -> None:
+        super().__init__()
+        self.emb_dataset = emb_dataset
+
+    def __len__(self):
+        return len(self.emb_dataset)
+    
+    def __getitem__(self, index):
+        sample = self.emb_dataset[index]
+        # s, g, a
+        return sample['target_s'], sample['target_emb'], sample['target_a']
+
+    def __getattr__(self, attribute_name):
+        if attribute_name not in self.__dict__:
+            return getattr(self.emb_dataset, attribute_name)
+        return self.__dict__[attribute_name]
+
 
 def collate_fn(batch):
-    s = torch.cat([b[0] for b in batch], 0)
-    a = torch.cat([b[2] for b in batch], 0)
-    g = torch.cat([b[1].tile(b[0].shape[0], 1) for b in batch])
-    
+    STATE = 0
+    GOAL = 1
+    ACTION = 2
+    s = torch.cat([b[STATE] for b in batch], 0)
+    a = torch.cat([b[ACTION] for b in batch], 0)
+    g = torch.cat([b[GOAL].tile(b[STATE].shape[0], 1) for b in batch])
     return s, g, a
 
 class Evaluator(EvaluatorPointMazeBase):
@@ -276,94 +332,91 @@ def main(pargs):
 
         demo_embs = torch.cat(embs, 0).detach().cpu().numpy()
         classes = classes.detach().cpu().numpy()
+        # # using 2d TSNE projections as embs??
+        # demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
+        # emb_content = dict(embs=demo_2d, states=states, actions=actions, classes=classes)
         emb_content = dict(embs=demo_embs, states=states, actions=actions, classes=classes)
         write_pickle(emb_file, emb_content)
     else:
         print('Loading pre-computed trajectory embeddings of the dataset ...')
         emb_content = read_pickle(emb_file)
+    
+    train_emb_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='train', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
+    valid_emb_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='valid', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
 
-    train_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='train', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
-    valid_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='valid', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
-    test_dataset  = PointmassEmbBCDataset(data_path, **emb_content, mode='test')
+    train_dataset = GCBCDatasetWrapper(train_emb_dataset)
+    valid_dataset = GCBCDatasetWrapper(valid_emb_dataset)
 
-    ###### visualize the data
-    # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=False, batch_size=len(train_dataset), num_workers=0, collate_fn=collate_fn)))
-    tbatch_all = next(iter(DataLoader(train_dataset, shuffle=False, batch_size=32, num_workers=0, collate_fn=collate_fn)))
-    vbatch_all = next(iter(DataLoader(valid_dataset, shuffle=False, batch_size=len(valid_dataset), num_workers=0, collate_fn=collate_fn)))
-    te_batch_all = next(iter(DataLoader(test_dataset, shuffle=False, batch_size=len(test_dataset), num_workers=0, collate_fn=collate_fn)))
-    t_state, t_goal, t_action = tbatch_all
-    v_state, v_goal, v_action = vbatch_all
-    te_state, _, _ = te_batch_all
+    # # calculate the accuracy per number of epoch
+    # n_epoch = 200
+    # correct_list = []
+    # acc_list = []
+    # epoch_list = []
+    # wrong_samples = []
+    # for epoch in range(n_epoch):
+    #     for idx in range(len(train_emb_dataset)):
+    #         sample = train_emb_dataset[idx]
 
-    # # plot the distribution of states and compare it to validation
+    #         dist = torch.linalg.norm(sample['context_s'][-1, :2] - sample['target_s'][-1, :2])
+    #         success_from_s = bool(dist < 0.2)
+
+    #         success_from_labels = bool(sample['context_class_id'] == sample['target_class_id'])
+    #         assert success_from_s == success_from_labels
+
+    #         if not success_from_s:
+    #             wrong_samples.append(sample)
+    #         correct_list.append(success_from_s)
+
+    #     acc_list.append(np.mean(correct_list))
+    #     epoch_list.append(epoch)
+    
+    # plt.plot(epoch_list, acc_list)
+    # plt.savefig('debug_gcbcv2_w_osil_emb_acc_vs_ep.png')
+    # breakpoint()
+
+    # ###### visualize the data
     # plt.close()
-    # plt.scatter(t_state[:, 0], t_state[:, 1], color='blue', alpha=0.5, s=5, label='train')
-    # plt.scatter(v_state[:, 0], v_state[:, 1], color='orange', alpha=0.5, s=5, label='valid')
-    # plt.scatter(te_state[-4000:, 0], te_state[-4000:, 1], color='red', alpha=0.5, s=5, label='test')
-    # plt.xlim(0, 4)
-    # plt.ylim(0, 6)
+    # _, axes = plt.subplots(4, 4, figsize=(15, 8), squeeze=False)
+    # axes = axes.flatten()
+    # for idx, sample in enumerate(wrong_samples[:16]):
+    #     s = sample['target_s']
+    #     axes[idx].plot(s[:, 0], s[:, 1], color='red', linewidth=5, label='query')
+    #     axes[idx].scatter([s[-1, 0]], [s[-1, 1]], color='green', s=320, marker='*', label='q_end')
+
+    #     state_seq = sample['context_s']
+    #     axes[idx].plot(state_seq[:, 0], state_seq[:, 1], color='orange', alpha=0.5)
+    #     axes[idx].scatter([state_seq[-1, 0]], [state_seq[-1, 1]], color='orange', marker='.', s=50, alpha=0.5)
+    #     axes[idx].set_xlim(0, 4)
+    #     axes[idx].set_ylim(0, 6)
+    
     # plt.legend()
-    # plt.savefig('debug_gcbcv2_w_osil_emb_xy_train_valid.png')
+    # plt.tight_layout()    
+    # plt.savefig(f'debug_gcbcv2_w_osil_emb_failed_modes.png')
 
-    # end_diffs = []
-    # # for idx in range(10): #len(valid_dataset)):
-    # wrong_nns = []
+    # ## visualize goals
+    # print('Running TSNE ...')
+    # points = []
+    # colors = []
+    # for idx in range(len(train_emb_dataset)):
+    #     data = train_emb_dataset[idx]
+    #     points.append(data['context_emb'].numpy())
+    #     colors.append(int(data['context_class_id']))
+    
+    # colors = np.array(colors)
+    # points = np.stack(points, 0)
     # plt.close()
-
-    # total_cnt = 0
-    # for idx in range(len(train_dataset)):
-    #     s, g, _ = train_dataset[idx]
-    #     # plt.plot(s[:, 0], s[:, 1], color='red', linewidth=5, label='query')
-    #     # plt.scatter([s[-1, 0]], [s[-1, 1]], color='green', s=320, marker='*', label='q_end')
-    #     s_end = s[-1, :2].numpy()
-    #     for nn_idx, state_seq in enumerate(train_dataset.nn_s[idx]):
-    #         dist = np.linalg.norm(state_seq[-1, :2] - s_end)
-    #         end_diffs.append(dist)
-    #         if dist > 0.2:
-    #             wrong_nns.append((idx, nn_idx))
-    #         total_cnt += 1
-    #         # plt.plot(state_seq[:, 0], state_seq[:, 1], color='orange', alpha=0.5)
-    #         # plt.scatter([state_seq[-1, 0]], [state_seq[-1, 1]], color='orange', marker='.', s=50, alpha=0.5)
-    #     # plt.xlim(0, 4)
-    #     # plt.ylim(0, 6)
-    #     # plt.legend()
-
-    # print(f'acc = {1 - len(wrong_nns) / total_cnt}')
-    # plt.hist(end_diffs, bins=100, density=True)
-    # plt.savefig(f'debug_gcbcv2_w_osil_emb_neighbors_dist_end_diffs.png')
-
-    # for traj_idx, nn_idx in wrong_nns[:50]:
-    #     s, _, _ = train_dataset[traj_idx]
-    #     plt.close()
-    #     plt.plot(s[:, 0], s[:, 1], color='red', linewidth=5, label='query')
-    #     plt.scatter([s[-1, 0]], [s[-1, 1]], color='green', s=320, marker='*', label='q_end')
-
-    #     state_seq = train_dataset.nn_s[traj_idx][nn_idx]
-    #     plt.plot(state_seq[:, 0], state_seq[:, 1], color='orange', alpha=0.5)
-    #     plt.scatter([state_seq[-1, 0]], [state_seq[-1, 1]], color='orange', marker='.', s=50, alpha=0.5)
-    #     plt.xlim(0, 4)
-    #     plt.ylim(0, 6)
-    #     plt.legend()
-    #     plt.savefig(f'debug_gcbcv2_w_osil_emb_neighbors_{traj_idx}_{nn_idx}.png')
-
-    ## visualize goals
-    print('Running TSNE ...')
-    goals = torch.cat([t_goal, v_goal], 0).numpy()
-    breakpoint()
-    g2d = TSNE(n_components=2).fit_transform(goals)
-    colors = np.concatenate([
-        np.zeros(t_goal.shape[0]),
-        np.zeros(v_goal.shape[0]) + 1,
-    ], 0)
-    plt.scatter(g2d[:, 0], g2d[:, 1], c=colors, s=5)
-    plt.savefig('debug_gcbcv2_w_osil_emb_neighbors_tsne_gaols.png')
-
-    breakpoint()
-
+    # for c in [4, 9, 13]:#set(colors):
+    #     x2d = points[colors==c]
+    #     plt.scatter(x2d[:, 0], x2d[:, 1], s=5, label=f'class = {c}')
+    #     print(c, len(x2d))
+    # plt.legend()
+    # plt.savefig('debug_gcbcv2_w_osil_emb_neighbors_tsne_gaols.png')
 
     tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)
     vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)
     obs, goal, act = train_dataset[0]
+
+    assert goal.shape[-1] == 2
 
     config = ParamDict(
         hidden_dim=pargs.hidden_dim,
@@ -421,7 +474,7 @@ def main(pargs):
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
-
+    test_dataset  = GCBCDatasetWrapper(PointmassEmbBCDataset(data_path, **emb_content, mode='test'))
     evaluator = Evaluator(pargs, {'decoder': decoder, 'encoder': encoder}, eval_output_dir, test_dataset)
     evaluator.eval()
 

@@ -29,6 +29,9 @@ import torch
 import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
+from sklearn.preprocessing import OneHotEncoder
+
+
 
 class PointmassBCDataset(Dataset):
 
@@ -50,10 +53,15 @@ class PointmassBCDataset(Dataset):
         # fake goal dim
         self.goal_dim = goal_dim
 
+        task_to_class_map = {}
+        class_id = 0
         task_name_list = []
         for task_id in self.raw_data:
             for var_id in self.raw_data[task_id]:
                 task_name_list.append((task_id, var_id))
+                task_to_class_map[(task_id, var_id)] = class_id
+                class_id += 1
+
         np.random.seed(seed+10)
         inds = np.random.permutation(np.arange(len(task_name_list)))
 
@@ -61,7 +69,6 @@ class PointmassBCDataset(Dataset):
         s = int(sratio * len(inds))
         e = int(eratio * len(inds))
         self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
-        foo = [task_name_list[i] for i in inds]
         
         states, actions, targets = [], [], []
         for task_id, var_id in self.allowed_ids:
@@ -75,8 +82,11 @@ class PointmassBCDataset(Dataset):
             for ep in episodes[:max_ep_idx]:
                 states.append(ep['state'])
                 actions.append(ep['action'])
-                # targets.append(ep['target'])
-                targets.append(np.tile(ep['state'][-1, :2], (len(ep['state']), 1)))
+                # target = ep['target']
+                target = np.tile(ep['state'][-1, :2], (len(ep['state']), 1))
+                # target = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[task_to_class_map[(task_id, var_id)]]])
+                # target = np.tile(target.toarray(), (len(ep['state']), 1))
+                targets.append(target)
 
         self.states = np.concatenate(states, 0)
         self.actions = np.concatenate(actions, 0)
@@ -99,6 +109,11 @@ class PointmassBCDataset(Dataset):
 class Evaluator(EvaluatorPointMazeBase):
 
     def _get_goal(self, demo_state, demo_action):
+        # final_loc = demo_state[-1, :2]
+        # if np.linalg.norm(final_loc - np.array([2, 2])) < np.linalg.norm(final_loc - np.array([2, 4])):
+        #     g = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[9]]).toarray()[0]
+        # else:
+        #     g = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[13]]).toarray()[0]
         g = demo_state[-1, :2]
         if self.conf.gd != -1:
             nrepeats = self.conf.gd // g.shape[-1]
@@ -155,7 +170,6 @@ def main(pargs):
     train_dataset = PointmassBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, goal_dim=pargs.gd)
     valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid', goal_dim=pargs.gd)
     test_dataset = PointmassBCDataset(data_path=data_path, mode='test', goal_dim=pargs.gd)
-    breakpoint()
 
     # ###### visualize the data
     # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=True, batch_size=len(train_dataset), num_workers=0)))

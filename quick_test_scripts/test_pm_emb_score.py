@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 import tqdm
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
 from sklearn.manifold import TSNE
 from sklearn.neighbors import KNeighborsClassifier
@@ -85,10 +86,24 @@ def main(pargs):
     demo_embs = torch.cat(embs, 0).detach().cpu().numpy()
     classes = classes.detach().cpu().numpy()
 
-    # print('Running TSNE ...')
-    # demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
-    # plt.scatter(demo_2d[:, 0], demo_2d[:, 1], c=classes, s=5)
-    # plt.savefig(output_dir / 'tsne_demo_embs.png')
+    print('Running TSNE ...')
+    SPLITS = {
+        'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
+        'valid': [4], 
+        'test': [13, 9],
+    }
+
+    demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
+    colors = np.zeros_like(classes)
+    for idx, mode in enumerate(SPLITS):
+        for c in SPLITS[mode]:
+            colors[classes==c] = idx
+
+    s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(['blue', 'orange', 'green']))
+    h,l = s_plt.legend_elements()
+    plt.legend(handles = h, labels=['train', 'valid', 'test'])
+    plt.savefig(output_dir / 'tsne_demo_embs.png')
+    breakpoint()
 
     # print('Running KNN for k = [1, 3, 5, 10, 25, 50, 100]')
     # k_list = [1, 3, 5, 10, 25, 50, 100]
@@ -147,6 +162,7 @@ def main(pargs):
         query_acc_list = []
         for idx in range(len(demo_embs)):
             dist = np.sqrt(((demo_embs - demo_embs[idx]) ** 2).sum(-1))
+            dist[idx] = float('inf')
             cand_inds = np.argsort(dist)[:k]
             retrieved_classes = classes[cand_inds]
             query_acc = (retrieved_classes == classes[idx]).sum() / k
