@@ -78,6 +78,8 @@ def _parse_args():
     parser.add_argument('--ckpt', type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
+    parser.add_argument('--save_ckpt_every_steps', type=int, default=-1)
+    
     # wandb
     parser.add_argument('--use_wandb', '-wb', action='store_true')
     parser.add_argument('--wandb_id', type=str, help='Wandb id to allow for resuming')
@@ -185,8 +187,10 @@ def main(pargs):
                 monitor='valid_loss',
                 filename='cgl-{step}-{valid_loss:.4f}-{epoch:02d}',
                 save_last=True,
-                save_on_train_epoch_end=True,
+                # save_on_train_epoch_end=True,
                 mode='min',
+                save_top_k=1 if pargs.save_ckpt_every_steps == -1 else -1,
+                every_n_train_steps=None if pargs.save_ckpt_every_steps == -1 else pargs.save_ckpt_every_steps,
             )
 
     trainer = pl.Trainer(
@@ -202,6 +206,7 @@ def main(pargs):
     if train:
         trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+        ckpt_callback.to_yaml(eval_output_dir / 'model_ckpts.yaml')
         agent = agent.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     else:
         eval_output_dir = pargs.eval_path
