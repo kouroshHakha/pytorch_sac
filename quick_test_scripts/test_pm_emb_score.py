@@ -2,6 +2,7 @@
 import argparse
 import numpy as np
 from pathlib import Path
+from sklearn.decomposition import PCA
 import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -103,7 +104,17 @@ def main(pargs):
     h,l = s_plt.legend_elements()
     plt.legend(handles = h, labels=['train', 'valid', 'test'])
     plt.savefig(output_dir / 'tsne_demo_embs.png')
-    breakpoint()
+
+    plt.close()
+
+    print('Running PCA ...')
+
+    demo_2d = PCA(n_components=2).fit_transform(demo_embs)
+    s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(['blue', 'orange', 'green']))
+    h,l = s_plt.legend_elements()
+    plt.legend(handles = h, labels=['train', 'valid', 'test'])
+    plt.savefig(output_dir / 'pca_demo_embs.png')
+
 
     # print('Running KNN for k = [1, 3, 5, 10, 25, 50, 100]')
     # k_list = [1, 3, 5, 10, 25, 50, 100]
@@ -152,30 +163,30 @@ def main(pargs):
     # write_yaml(output_dir / 'knn_results.yaml', results)
 
 
-    # compute trajectory retrieval scores
-    print('Computing trajectory retrieval score ...')
-    # last k should be 99 since except the index itself there are 99 others
-    k_list = [1, 3, 5, 10, 25, 50, 100]
+    # # compute trajectory retrieval scores
+    # print('Computing trajectory retrieval score ...')
+    # # last k should be 99 since except the index itself there are 99 others
+    # k_list = [1, 3, 5, 10, 25, 50, 100]
 
-    tr_score_list = []
-    for k in tqdm.tqdm(k_list):
-        query_acc_list = []
-        for idx in range(len(demo_embs)):
-            dist = np.sqrt(((demo_embs - demo_embs[idx]) ** 2).sum(-1))
-            dist[idx] = float('inf')
-            cand_inds = np.argsort(dist)[:k]
-            retrieved_classes = classes[cand_inds]
-            query_acc = (retrieved_classes == classes[idx]).sum() / k
-            query_acc_list.append(query_acc)
-        tr_score = np.mean(query_acc_list)
-        tr_score_list.append(float(tr_score))
+    # tr_score_list = []
+    # for k in tqdm.tqdm(k_list):
+    #     query_acc_list = []
+    #     for idx in range(len(demo_embs)):
+    #         dist = np.sqrt(((demo_embs - demo_embs[idx]) ** 2).sum(-1))
+    #         dist[idx] = float('inf')
+    #         cand_inds = np.argsort(dist)[:k]
+    #         retrieved_classes = classes[cand_inds]
+    #         query_acc = (retrieved_classes == classes[idx]).sum() / k
+    #         query_acc_list.append(query_acc)
+    #     tr_score = np.mean(query_acc_list)
+    #     tr_score_list.append(float(tr_score))
 
-    print(f'{"k":2}, {"tr_score":10}')
-    for k, tr_score in zip(k_list, tr_score_list):
-        print(f'{k:2d}, {tr_score:10.3f}')
+    # print(f'{"k":2}, {"tr_score":10}')
+    # for k, tr_score in zip(k_list, tr_score_list):
+    #     print(f'{k:2d}, {tr_score:10.3f}')
 
-    results = dict(k_list=k_list, tr_scores=tr_score_list)
-    write_yaml(output_dir / 'tr_results.yaml', results)
+    # results = dict(k_list=k_list, tr_scores=tr_score_list)
+    # write_yaml(output_dir / 'tr_results.yaml', results)
 
 if __name__ == '__main__':
     main(_parse_args())
