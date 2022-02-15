@@ -1,4 +1,5 @@
 
+from logging import warning
 from pathlib import Path
 import pickle
 import numpy as np
@@ -264,15 +265,20 @@ class PointMazePairedDataset(Dataset):
             target_a=torch.as_tensor(episodes[t_idx]['action'], dtype=torch.float)
         )
 
-def collate_fn_for_supervised_osil(batch, padding=128):
+def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None):
     # Note: we will have dynamic batch size for training the MLP part which should be ok? not sure!
     # you should use torch.repeat_interleave(x, ptr, dim=0) to repeat 
     # x with a frequency of values in ptr across dim=0 (this is needed in the decoder training)
     elem = batch[0]
     ret = {}
     attn_mask = None
+    used_keys = set()
+
+    if ignore_keys is None:
+        ignore_keys = []
+        
     for key in elem:
-        if key.startswith('context'):
+        if key.startswith(('context_s', 'context_a')):
             # zero pad and then stack + create attention mask
             token_shape = (len(batch), padding) + elem[key].shape[1:]
             ret[key] = torch.zeros(token_shape, dtype=elem[key].dtype, device=elem[key].device) 
@@ -289,11 +295,21 @@ def collate_fn_for_supervised_osil(batch, padding=128):
             if 'attention_mask' not in ret and attn_mask is not None:
                 # makes sure we only create attn_mask once based on c_s or c_a
                 ret['attention_mask'] = attn_mask
+            used_keys.add(key)
 
-        elif key.startswith('target'):
+        elif key.startswith(('target_s', 'target_a')):
             ret[key] = torch.cat([e[key].view(-1, elem[key].shape[-1]) for e in batch], 0)
             if 'ptr' not in ret:
                 ret['ptr'] = torch.tensor([len(e[key]) for e in batch])
+            used_keys.add(key)
+
+    for key in elem:
+        if key not in used_keys and key not in ignore_keys:
+            # try:
+                ret[key] = torch.stack([b[key] for b in batch], 0)
+            # except:
+            #     warning.warn(f'attribute {key} is not batchable, consider removing it from the dataset?')
+            #     ret[key] = [b[key] for b in batch]
 
     return ret
     

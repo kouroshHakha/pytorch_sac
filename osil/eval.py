@@ -202,11 +202,12 @@ def set_spine_color(ax, color):
 class EvaluatorPointMazeBase:
 
 
-    def __init__(self, conf, agent, output_dir, test_dset):
+    def __init__(self, conf, agent, output_dir, test_dset, mode='test'):
         self.conf = conf
         self.agent = agent
         self.output_dir = Path(output_dir)
         self.test_cases = self.get_test_cases(test_dset)
+        self.mode = mode
 
     @classmethod
     def get_test_cases(cls, test_dataset):
@@ -242,7 +243,7 @@ class EvaluatorPointMazeBase:
     def eval(self):
         successes = []
         example_trajs = []
-        print(f'Running evaluation on {len(self.test_cases)} test cases ...')
+        print(f'Running evaluation on {len(self.test_cases)} {self.mode} cases ...')
         for test_case in tqdm.tqdm(self.test_cases):
 
             demo_state      = test_case['context_s']
@@ -287,14 +288,14 @@ class EvaluatorPointMazeBase:
 
             successes.append(done)
 
-        write_yaml(self.output_dir / 'summary.yaml', dict(success_rate=float(np.mean(successes))))
-        write_pickle(self.output_dir / 'example_trajs.pkl', example_trajs)
+        write_yaml(self.output_dir / f'summary_{self.mode}.yaml', dict(success_rate=float(np.mean(successes))))
+        write_pickle(self.output_dir / f'example_trajs_{self.mode}.pkl', example_trajs)
 
         print('Plotting examples ...')
         T = 16
         nrows = int(T ** 0.5)
         ncols = -(-T // nrows) # cieling
-        plot_path = self.output_dir / f'examples_{T}.png'
+        plot_path = self.output_dir / f'examples_{self.mode}_{T}.png'
 
         _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
         axes = axes.flatten()
@@ -321,7 +322,7 @@ class EvaluatorPointMazeBase:
             T = min(16, num_fails)
             nrows = int(T ** 0.5)
             ncols = -(-T // nrows) # cieling
-            plot_path = self.output_dir / f'examples_{T}_failed.png'
+            plot_path = self.output_dir / f'examples_{self.mode}_{T}_failed.png'
 
             plt.close()
             _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
