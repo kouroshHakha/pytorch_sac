@@ -1,5 +1,31 @@
 # Update logs for osil project
 
+To run the gcbc_v2 for goal conditioned behavioral cloning on the pm data for `ns=5`:
+
+```
+python quick_test_scripts/train_gcbcv2_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots 5 -wb --run_name gcbcv2_maze2d_open_ns_5_noisy_target
+```
+
+You can look at `gcbcv2_maze2d_open_ns_5_noisy_target` on wandb for a reference. Other experiments should be done similarly:
+
+To run transformer osil (supervised osil) also used for pretraining the embedding:
+
+```
+python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots 100 -wb --run_name tosil_maze2d_open_ns_100
+```
+
+This will create a log path under `wandb_osil/osil/<WANDB_ID>` where you can find the checkpoints (all the ckpts I have generated so far are under `/shared`).
+
+
+To run the semi-supervised osil with pretrained embedding:
+
+```
+python quick_test_scripts/train_gcbcv2_w_osil_embedding_v3.py --dataset_path ./maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 -bs 128 --max_steps 10000 --encoder_ckpt wandb_logs/osil/38tubxrp/checkpoints/cgl-step=964-valid_loss=0.1720-epoch=964.ckpt --model osil -wb --force_emb -kn 100 --run_name semi_osil_ns5_self_emb_kn=100
+```
+
+The rest of experiment commands are included in `run_exps.sh`.
+
+
 To run the code in docker:
 
 ```bash
