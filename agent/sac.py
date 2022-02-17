@@ -56,7 +56,7 @@ class SACAgent:
         return self.log_alpha.exp()
 
     def act(self, obs, step, eval_mode):
-        obs = torch.as_tensor(obs, device=self.device).unsqueeze(0)
+        obs = torch.as_tensor(obs, device=self.device, dtype=torch.float).unsqueeze(0)
         dist = self.actor(obs)
         if eval_mode:
             action = dist.mean
@@ -125,7 +125,7 @@ class SACAgent:
         if self.use_tb:
             metrics['actor_loss'] = actor_loss.item()
             metrics['actor_logprob'] = log_prob.mean().item()
-            metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()
+            # metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()
             metrics['actor_alpha'] = self.alpha.item()
             metrics['actor_alpha_loss'] = alpha_loss.item()
 

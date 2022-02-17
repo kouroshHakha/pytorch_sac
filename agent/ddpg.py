@@ -46,7 +46,7 @@ class DDPGAgent:
         self.critic.train(training)
 
     def act(self, obs, step, eval_mode):
-        obs = torch.as_tensor(obs, device=self.device).unsqueeze(0)
+        obs = torch.as_tensor(obs, device=self.device, dtype=torch.float).unsqueeze(0)
         stddev = utils.schedule(self.stddev_schedule, step)
         dist = self.actor(obs, stddev)
         if eval_mode:

@@ -198,7 +198,7 @@ def set_requires_grad(net, value):
 def to_torch(xs, device, dtype=None):
     if dtype is not None:
         xs = (x.astype(dtype) for x in xs)
-    return tuple(torch.as_tensor(x, device=device) for x in xs)
+    return tuple(torch.as_tensor(x, device=device, dtype=torch.float) for x in xs)
 
 
 def weight_init(m):

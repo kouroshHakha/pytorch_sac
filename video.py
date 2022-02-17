@@ -4,7 +4,7 @@ import numpy as np
 
 
 class VideoRecorder:
-    def __init__(self, root_dir, render_size=256, camera_id=0, fps=20):
+    def __init__(self, root_dir, render_size=256, camera_id=0, fps=20, is_mujoco=False):
         if root_dir is not None:
             self.save_dir = root_dir / 'eval_video'
             self.save_dir.mkdir(exist_ok=True, parents=True)
@@ -15,6 +15,7 @@ class VideoRecorder:
         self.fps = fps
         self.camera_id = camera_id
         self.frames = []
+        self.is_mujoco = is_mujoco
 
     def init(self, env, enabled=True):
         self.frames = []
@@ -28,7 +29,14 @@ class VideoRecorder:
                                            width=self.render_size,
                                            camera_id=self.camera_id)
             else:
-                frame = env.render()
+                if self.is_mujoco:
+                    frame = env.unwrapped.sim.render(
+                        height=self.render_size,
+                        width=self.render_size,
+                        mode='offscreen',
+                    )[::-1]
+                else:
+                    frame = env.render()
             self.frames.append(frame)
 
     def save(self, file_name):

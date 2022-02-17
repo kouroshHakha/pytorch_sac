@@ -27,5 +27,5 @@ wandb
 
 
 # data for maze2d
-maze2d-*
-maze2d-*
+maze2d-*_osil*
+reacher_7dof-v1_osil_dataset*
