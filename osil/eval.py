@@ -199,7 +199,7 @@ def set_spine_color(ax, color):
         ax.spines[dir].set_color(color)
         ax.spines[dir].set_linewidth(4)
 
-class EvaluatorPointMazeBase:
+class EvaluatorBase:
 
 
     def __init__(self, conf, agent, output_dir, test_dset, mode='test'):
@@ -208,6 +208,7 @@ class EvaluatorPointMazeBase:
         self.output_dir = Path(output_dir)
         self.test_cases = self.get_test_cases(test_dset)
         self.mode = mode
+
 
     @classmethod
     def get_test_cases(cls, test_dataset):
@@ -239,6 +240,11 @@ class EvaluatorPointMazeBase:
 
     def _get_action(self, state, goal):
         raise NotImplementedError
+
+    def eval(self):
+        raise NotImplementedError
+
+class EvaluatorPointMazeBase(EvaluatorBase):
 
     def eval(self):
         successes = []
@@ -353,3 +359,126 @@ class EvaluatorPointMazeBase:
         print(f'Evaluating the agent is done, success rate: {float(np.mean(successes))}')
 
 
+class EvaluatorReacherSawyer(EvaluatorBase):
+
+    def render(self, env):
+        return env.unwrapped.sim.render(256, 256, mode='offscreen')[::-1]
+
+    def eval(self):
+        successes = []
+        print(f'Running evaluation on {len(self.test_cases)} {self.mode} cases ...')
+
+        max_render = 10
+        policy_imgs = []
+        demo_imgs = []
+        for test_idx, test_case in tqdm.tqdm(enumerate(self.test_cases)):
+
+            demo_state      = test_case['context_s']
+            demo_action     = test_case['context_a']
+            new_rst_state   = test_case['rst']
+            demo_target     = demo_state[0][-1, -3:] # eef of the last step
+
+            env = gym.make(self.conf.env_name)
+
+            # render demo policy
+            if test_idx < max_render:
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(demo_state[0, :7])
+                for a in demo_action:
+                    demo_imgs.append(self.render(env))
+                    env.step(a)
+
+            # set the reset
+            env.reset()
+            env.set_target(demo_target)
+            s = env.robot_reset_to_qpos(new_rst_state[:7]) # reset qpos
+
+            # set the target
+            goal = self._get_goal(demo_state, demo_action)
+            done = False
+            step = 0
+
+            success = False
+            for _ in demo_action: # since the ep_len is always n it makes sense to do this
+                # step through the policy
+                a = self._get_action(s, goal)
+                # a = env.action_space.sample()
+                if test_idx < max_render:
+                    policy_imgs.append(self.render(env))
+                s, _, done, _ = env.step(a)
+
+                if not success:
+                    # TODO: is this the right threshold?
+                    success = np.linalg.norm(s[-3:] - demo_state[-1, -3:]) < 0.15
+                if done:
+                    break
+                step += 1
+
+            successes.append(success)
+        
+        policy_imgs = np.stack(policy_imgs, 0)
+        demo_imgs   = np.stack(demo_imgs, 0)
+
+        assert demo_imgs.shape == policy_imgs.shape
+
+        write_yaml(self.output_dir / f'summary_{self.mode}.yaml', dict(success_rate=float(np.mean(successes))))
+        write_pickle(self.output_dir / f'example_trajs_{self.mode}.pkl', dict(demo=demo_imgs, policy=policy_imgs))
+
+        print('Plotting examples ...')
+        plot_path = self.output_dir / f'examples_{self.mode}.gif'
+
+        for demo_traj, policy_traj in zip(demo_imgs, policy_imgs):
+            pass
+
+            # policy_xy = traj['visited_xys']
+            # demo_xy = traj['demo_xy']
+            # gt_xy = traj['gt_xy']
+            # axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy', alpha=0.5)
+            # axes[idx].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo', alpha=0.5)
+            # axes[idx].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
+            # axes[idx].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
+            # axes[idx].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
+            # axes[idx].set_xlim([0, 4])
+            # axes[idx].set_ylim([0, 6])
+            # set_spine_color(axes[idx], 'green' if successes[idx] else 'red')
+        # plt.legend()
+        # plt.tight_layout()
+        # plt.savefig(plot_path, dpi=250)
+
+        # # plot failed ones too
+        # num_fails = len(successes) - sum(successes)
+        # if num_fails > 0:
+        #     print('Plotting failed examples ...')
+        #     T = min(16, num_fails)
+        #     nrows = int(T ** 0.5)
+        #     ncols = -(-T // nrows) # cieling
+        #     plot_path = self.output_dir / f'examples_{self.mode}_{T}_failed.png'
+
+        #     plt.close()
+        #     _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
+        #     axes = axes.flatten()
+
+        #     count = 0
+        #     for idx, traj in enumerate(example_trajs):
+        #         if successes[idx]:
+        #             continue
+        #         if count == T:
+        #             break
+        #         policy_xy = traj['visited_xys']
+        #         demo_xy = traj['demo_xy']
+        #         gt_xy = traj['gt_xy']
+
+        #         axes[count].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy', alpha=0.5)
+        #         axes[count].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo', alpha=0.5)
+        #         axes[count].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
+        #         axes[count].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
+        #         axes[count].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
+        #         axes[count].set_xlim([0, 4])
+        #         axes[count].set_ylim([0, 6])
+        #         count += 1
+
+        #     plt.legend()
+        #     plt.tight_layout()
+        #     plt.savefig(plot_path, dpi=250)
+        # print(f'Evaluating the agent is done, success rate: {float(np.mean(successes))}')

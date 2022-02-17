@@ -16,10 +16,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from osil.data import GCPM, TestOsilPM
 from osil.nets import GCBCv2
 from osil.utils import ParamDict
-from osil.eval import EvaluatorPointMazeBase
+from osil.eval import EvaluatorPointMazeBase, EvaluatorReacherSawyer
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -29,11 +28,10 @@ import torch
 import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
-from sklearn.preprocessing import OneHotEncoder
 
 
 
-class PointmassBCDataset(Dataset):
+class GCBCDataset(Dataset):
 
     def __init__(
         self,
@@ -41,34 +39,46 @@ class PointmassBCDataset(Dataset):
         mode='train', # valid / test are also posssible
         seed=0,
         nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
-        goal_dim=-1,
+        env_name='maze2d-open-v0'
     ):
-        SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
+                # to enable backward compatible comparision with the other experiment
+        SPLITS = {
+            'reacher_7dof-v1': {
+                'train': np.arange(12, 64).tolist(),
+                'valid': [6, 1, 5, 8, 0, 11],
+                'test': [4, 10, 3, 9, 7, 2],
+            }, 
+            'maze2d-open-v0': {
+                'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
+                'valid': [4], 
+                'test': [13, 9],
+            }
+        }
+        self.splits = SPLITS[env_name]
+        # SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
         self.data_path = Path(data_path)
         collector = OsilDataCollector.load(data_path)
         self.raw_data = collector.data
         self.nshots_per_task = nshots_per_task
 
-        # fake goal dim
-        self.goal_dim = goal_dim
-
-        task_to_class_map = {}
+        # create this allowed ids to make it compatible with previously implemented evaluation functions
+        class_to_task_map = {}
         class_id = 0
-        task_name_list = []
         for task_id in self.raw_data:
             for var_id in self.raw_data[task_id]:
-                task_name_list.append((task_id, var_id))
-                task_to_class_map[(task_id, var_id)] = class_id
+                class_to_task_map[class_id] = (task_id, var_id)
                 class_id += 1
+        # task_to_class_map = {v: k for k, v in class_to_task_map.items()}
+        self.allowed_ids = [class_to_task_map[i] for i in self.splits[mode]]
 
-        np.random.seed(seed+10)
-        inds = np.random.permutation(np.arange(len(task_name_list)))
+        # np.random.seed(seed+10)
+        # inds = np.random.permutation(np.arange(len(task_name_list)))
 
-        sratio, eratio = SPLITS[mode]
-        s = int(sratio * len(inds))
-        e = int(eratio * len(inds))
-        self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
+        # sratio, eratio = SPLITS[mode]
+        # s = int(sratio * len(inds))
+        # e = int(eratio * len(inds))
+        # self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
         
         states, actions, targets = [], [], []
         for task_id, var_id in self.allowed_ids:
@@ -83,7 +93,13 @@ class PointmassBCDataset(Dataset):
                 states.append(ep['state'])
                 actions.append(ep['action'])
                 # target = ep['target']
-                target = np.tile(ep['state'][-1, :2], (len(ep['state']), 1))
+                if env_name == 'maze2d-open-v0':
+                    # the xy location of the last state
+                    target = np.tile(ep['state'][-1, :2], (len(ep['state']), 1))
+                elif env_name == 'reacher_7dof-v1':
+                    # the 3d eef at the last state
+                    target = np.tile(ep['state'][-1][-3:], (len(ep['state']), 1))
+
                 # target = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[task_to_class_map[(task_id, var_id)]]])
                 # target = np.tile(target.toarray(), (len(ep['state']), 1))
                 targets.append(target)
@@ -106,14 +122,17 @@ class PointmassBCDataset(Dataset):
 
         return x, g, y
 
-class Evaluator(EvaluatorPointMazeBase):
 
+def get_action(state, goal, agent):
+    device = agent.device
+    state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
+    goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+    pred_ac = agent(state_tens, goal_tens)
+    a = pred_ac.squeeze(0).detach().cpu().numpy()
+    return a
+
+class EvaluatorPM(EvaluatorPointMazeBase):
     def _get_goal(self, demo_state, demo_action):
-        # final_loc = demo_state[-1, :2]
-        # if np.linalg.norm(final_loc - np.array([2, 2])) < np.linalg.norm(final_loc - np.array([2, 4])):
-        #     g = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[9]]).toarray()[0]
-        # else:
-        #     g = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[13]]).toarray()[0]
         g = demo_state[-1, :2]
         if self.conf.gd != -1:
             nrepeats = self.conf.gd // g.shape[-1]
@@ -122,12 +141,20 @@ class Evaluator(EvaluatorPointMazeBase):
         return g
 
     def _get_action(self, state, goal):
-        device = self.agent.device
-        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
-        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
-        pred_ac = self.agent(state_tens, goal_tens)
-        a = pred_ac.squeeze(0).detach().cpu().numpy()
-        return a
+        return get_action(state, goal, self.agent)
+
+class EvaluatorReacher(EvaluatorReacherSawyer):
+
+    def _get_goal(self, demo_state, demo_action):
+        g = demo_state[-1, -3:]
+        if self.conf.gd != -1:
+            nrepeats = self.conf.gd // g.shape[-1]
+            g = np.tile(g, (nrepeats, ))
+
+        return g
+
+    def _get_action(self, state, goal):
+        return get_action(state, goal, self.agent)
 
 
 def _parse_args():
@@ -162,14 +189,14 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'gcbcv2_pm'
+    exp_name = f'gcbcv2_{pargs.env_name}'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    train_dataset = PointmassBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, goal_dim=pargs.gd)
-    valid_dataset = PointmassBCDataset(data_path=data_path, mode='valid', goal_dim=pargs.gd)
-    test_dataset = PointmassBCDataset(data_path=data_path, mode='test', goal_dim=pargs.gd)
+    train_dataset = GCBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, env_name=pargs.env_name)
+    valid_dataset = GCBCDataset(data_path=data_path, mode='valid', env_name=pargs.env_name)
+    test_dataset  = GCBCDataset(data_path=data_path, mode='test', env_name=pargs.env_name)
 
     # ###### visualize the data
     # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=True, batch_size=len(train_dataset), num_workers=0)))
@@ -266,10 +293,12 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
 
-    evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
+    if pargs.env_name.startswith('maze2d'):
+        evaluator_cls = EvaluatorPM
+    elif pargs.env_name.startswith('reacher'):
+        evaluator_cls = EvaluatorReacher
+    evaluator = evaluator_cls(pargs, agent, eval_output_dir, test_dataset)
     evaluator.eval()
-
-
 
 if __name__ == '__main__':
     main(_parse_args())

@@ -106,7 +106,7 @@ class Reacher7DOFEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     def robot_reset_to_qpos(self, qpos):
         # reset to the given qpos with zero velocity, return the updated state 
         # (end effector position is derived)
-        self.set_state(qpos, np.zeros_like(qpos))
+        self.set_state(qpos, self.init_qvel)
         state = self.get_obs()
         return state
 
