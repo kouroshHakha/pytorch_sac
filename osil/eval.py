@@ -12,14 +12,16 @@ os.environ['MUJOCO_GL'] = 'egl'
 import torch
 torch.backends.cudnn.benchmark = True
 
-
+from tempfile import mkdtemp, mkstemp
 import dmc, utils
 from video import VideoRecorder
 
 from utils import write_yaml, write_pickle
+import envs
 import d4rl; import gym
 import yaml
 import time
+import imageio
 
 class Evaluator:
 
@@ -365,23 +367,27 @@ class EvaluatorReacherSawyer(EvaluatorBase):
         return env.unwrapped.sim.render(256, 256, mode='offscreen')[::-1]
 
     def eval(self):
-        successes = []
+        successes, rewards = [], []
         print(f'Running evaluation on {len(self.test_cases)} {self.mode} cases ...')
 
+        # TODO
         max_render = 10
         policy_imgs = []
         demo_imgs = []
-        for test_idx, test_case in tqdm.tqdm(enumerate(self.test_cases)):
 
+        shuffled_inds = np.random.permutation(len(self.test_cases))
+        for test_counter, test_idx in tqdm.tqdm(enumerate(shuffled_inds)):
+            test_case = self.test_cases[test_idx]
+            
             demo_state      = test_case['context_s']
             demo_action     = test_case['context_a']
             new_rst_state   = test_case['rst']
-            demo_target     = demo_state[0][-1, -3:] # eef of the last step
+            demo_target     = demo_state[-1, -3:] # eef of the last step
 
             env = gym.make(self.conf.env_name)
 
             # render demo policy
-            if test_idx < max_render:
+            if test_counter < max_render:
                 env.reset()
                 env.set_target(demo_target)
                 s = env.robot_reset_to_qpos(demo_state[0, :7])
@@ -392,7 +398,8 @@ class EvaluatorReacherSawyer(EvaluatorBase):
             # set the reset
             env.reset()
             env.set_target(demo_target)
-            s = env.robot_reset_to_qpos(new_rst_state[:7]) # reset qpos
+            env.robot_reset_to_qpos(new_rst_state[:7]) # reset qpos
+            s = env.get_obs(remove_target=True)
 
             # set the target
             goal = self._get_goal(demo_state, demo_action)
@@ -400,21 +407,26 @@ class EvaluatorReacherSawyer(EvaluatorBase):
             step = 0
 
             success = False
+            total_dist = 0
             for _ in demo_action: # since the ep_len is always n it makes sense to do this
                 # step through the policy
                 a = self._get_action(s, goal)
                 # a = env.action_space.sample()
-                if test_idx < max_render:
+                if test_counter < max_render:
                     policy_imgs.append(self.render(env))
-                s, _, done, _ = env.step(a)
+                _, _, done, _ = env.step(a)
+                s = env.get_obs(remove_target=True)
+                step_dist = np.linalg.norm(s[-3:] - demo_state[-1, -3:], ord=1)
+                total_dist += step_dist
 
                 if not success:
                     # TODO: is this the right threshold?
-                    success = np.linalg.norm(s[-3:] - demo_state[-1, -3:]) < 0.15
+                    success = step_dist < 0.05
                 if done:
                     break
                 step += 1
 
+            rewards.append(-total_dist)
             successes.append(success)
         
         policy_imgs = np.stack(policy_imgs, 0)
@@ -422,63 +434,41 @@ class EvaluatorReacherSawyer(EvaluatorBase):
 
         assert demo_imgs.shape == policy_imgs.shape
 
-        write_yaml(self.output_dir / f'summary_{self.mode}.yaml', dict(success_rate=float(np.mean(successes))))
+        summary = dict(
+            success_rate=float(np.mean(successes)),
+            total_dist=-float(np.mean(rewards))
+        )
+        write_yaml(self.output_dir / f'summary_{self.mode}.yaml', summary)
         write_pickle(self.output_dir / f'example_trajs_{self.mode}.pkl', dict(demo=demo_imgs, policy=policy_imgs))
+
+        print(f'success rate: {float(np.mean(successes))}, total_dist: {-float(np.mean(rewards))}')
 
         print('Plotting examples ...')
         plot_path = self.output_dir / f'examples_{self.mode}.gif'
 
+        pngs = []
+        tmp_dir = mkdtemp()
         for demo_traj, policy_traj in zip(demo_imgs, policy_imgs):
-            pass
+            plt.close()
+            fig = plt.figure()
+            plt.subplot(121)
+            plt.imshow(demo_traj)
+            plt.title('demo')
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(122)
+            plt.imshow(policy_traj)
+            plt.title('policy')
+            plt.xticks([])
+            plt.yticks([])
 
-            # policy_xy = traj['visited_xys']
-            # demo_xy = traj['demo_xy']
-            # gt_xy = traj['gt_xy']
-            # axes[idx].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy', alpha=0.5)
-            # axes[idx].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo', alpha=0.5)
-            # axes[idx].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
-            # axes[idx].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
-            # axes[idx].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
-            # axes[idx].set_xlim([0, 4])
-            # axes[idx].set_ylim([0, 6])
-            # set_spine_color(axes[idx], 'green' if successes[idx] else 'red')
-        # plt.legend()
-        # plt.tight_layout()
-        # plt.savefig(plot_path, dpi=250)
+            _, filename = mkstemp(dir=tmp_dir)
+            filename += '.png'
 
-        # # plot failed ones too
-        # num_fails = len(successes) - sum(successes)
-        # if num_fails > 0:
-        #     print('Plotting failed examples ...')
-        #     T = min(16, num_fails)
-        #     nrows = int(T ** 0.5)
-        #     ncols = -(-T // nrows) # cieling
-        #     plot_path = self.output_dir / f'examples_{self.mode}_{T}_failed.png'
+            fig.savefig(filename)
+            plt.clf() # clear figure
+            pngs.append(filename)
 
-        #     plt.close()
-        #     _, axes = plt.subplots(nrows, ncols, figsize=(15, 8), squeeze=False)
-        #     axes = axes.flatten()
-
-        #     count = 0
-        #     for idx, traj in enumerate(example_trajs):
-        #         if successes[idx]:
-        #             continue
-        #         if count == T:
-        #             break
-        #         policy_xy = traj['visited_xys']
-        #         demo_xy = traj['demo_xy']
-        #         gt_xy = traj['gt_xy']
-
-        #         axes[count].plot(policy_xy[:, 0], policy_xy[:, 1], linestyle='-', c='orange', linewidth=5, label='policy', alpha=0.5)
-        #         axes[count].plot(demo_xy[:, 0], demo_xy[:, 1], linestyle='-', c='red', linewidth=5, label='demo', alpha=0.5)
-        #         axes[count].plot(gt_xy[:, 0], gt_xy[:, 1], linestyle='--', c='blue', linewidth=1, label='gt')
-        #         axes[count].scatter([demo_xy[-1, 0]], [demo_xy[-1, 1]], s=320, marker='*', c='green', label='goal')
-        #         axes[count].scatter([policy_xy[-1, 0]], [policy_xy[-1, 1]], s=320, marker='*', c='red', label='policy_end')
-        #         axes[count].set_xlim([0, 4])
-        #         axes[count].set_ylim([0, 6])
-        #         count += 1
-
-        #     plt.legend()
-        #     plt.tight_layout()
-        #     plt.savefig(plot_path, dpi=250)
-        # print(f'Evaluating the agent is done, success rate: {float(np.mean(successes))}')
+        plot_images = [imageio.imread(png) for png in pngs]
+        imageio.mimsave(plot_path, plot_images, fps=25)
+        print('Plotting done.')

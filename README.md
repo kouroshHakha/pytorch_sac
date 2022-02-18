@@ -3,7 +3,7 @@
 To run the gcbc_v2 for goal conditioned behavioral cloning on the pm data for `ns=5`:
 
 ```
-python quick_test_scripts/train_gcbcv2_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots 5 -wb --run_name gcbcv2_maze2d_open_ns_5_noisy_target
+python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 -ns 5 -wb --run_name ns_5
 ```
 
 You can look at `gcbcv2_maze2d_open_ns_5_noisy_target` on wandb for a reference. Other experiments should be done similarly:

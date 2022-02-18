@@ -39,14 +39,14 @@ class GCBCDataset(Dataset):
         mode='train', # valid / test are also posssible
         seed=0,
         nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
-        env_name='maze2d-open-v0'
+        env_name='',
+        goal_dim = -1,
     ):
                 # to enable backward compatible comparision with the other experiment
         SPLITS = {
             'reacher_7dof-v1': {
-                'train': np.arange(12, 64).tolist(),
-                'valid': [6, 1, 5, 8, 0, 11],
-                'test': [4, 10, 3, 9, 7, 2],
+                'valid': [0, 1, 2, 3, 16, 17, 18, 19],
+                'test': [32, 33, 34, 35, 48, 49, 50, 51],
             }, 
             'maze2d-open-v0': {
                 'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
@@ -54,6 +54,7 @@ class GCBCDataset(Dataset):
                 'test': [13, 9],
             }
         }
+        SPLITS['reacher_7dof-v1']['train'] = [i for i in np.arange(64) if i not in SPLITS['reacher_7dof-v1']['valid'] + SPLITS['reacher_7dof-v1']['test']]
         self.splits = SPLITS[env_name]
         # SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
@@ -61,12 +62,13 @@ class GCBCDataset(Dataset):
         collector = OsilDataCollector.load(data_path)
         self.raw_data = collector.data
         self.nshots_per_task = nshots_per_task
+        self.goal_dim = goal_dim
 
         # create this allowed ids to make it compatible with previously implemented evaluation functions
         class_to_task_map = {}
         class_id = 0
         for task_id in self.raw_data:
-            for var_id in self.raw_data[task_id]:
+            for var_id in sorted(self.raw_data[task_id].keys()):
                 class_to_task_map[class_id] = (task_id, var_id)
                 class_id += 1
         # task_to_class_map = {v: k for k, v in class_to_task_map.items()}
@@ -297,8 +299,8 @@ def main(pargs):
         evaluator_cls = EvaluatorPM
     elif pargs.env_name.startswith('reacher'):
         evaluator_cls = EvaluatorReacher
-    evaluator = evaluator_cls(pargs, agent, eval_output_dir, test_dataset)
-    evaluator.eval()
+    evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
+    evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
 
 if __name__ == '__main__':
     main(_parse_args())

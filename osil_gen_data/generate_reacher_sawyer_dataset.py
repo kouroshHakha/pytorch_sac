@@ -82,7 +82,7 @@ def main():
                             act = agent.act(s, step=0, eval_mode=True)
 
                         # here we have s, act, target
-                        obs = env.get_obs(remove_target=True, remove_joint_info=True)
+                        obs = env.get_obs(remove_target=True)
                         ep['state'].append(obs)
                         ep['action'].append(act)
                         ep['target'].append(env.get_target())
