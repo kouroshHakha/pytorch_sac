@@ -1,12 +1,12 @@
-from osil.data import PointMazePairedDataset
+from osil.data import OsilPairedDataset
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
 data_path = Path('./maze2d-open-v0_osil_short_trajs_v2')
-tset = PointMazePairedDataset(data_path, mode='train')
-vset = PointMazePairedDataset(data_path, mode='valid')
-test_set = PointMazePairedDataset(data_path, mode='test')
+tset = OsilPairedDataset(data_path, mode='train')
+vset = OsilPairedDataset(data_path, mode='valid')
+test_set = OsilPairedDataset(data_path, mode='test')
 
 def get_last_xys(dset):
     last_xys = []

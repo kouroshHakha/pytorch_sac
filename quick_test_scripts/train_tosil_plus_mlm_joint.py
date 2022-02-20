@@ -17,7 +17,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from osil.nets import TOsilSemisupervised
 from osil.utils import ParamDict
 from osil.eval import EvaluatorPointMazeBase
-from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
+from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -94,12 +94,12 @@ def main(pargs):
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    train_dataset_paired = PointMazePairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
-    valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
-    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
+    train_dataset_paired = OsilPairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
+    valid_dataset = OsilPairedDataset(data_path=data_path, mode='valid')
+    test_dataset = OsilPairedDataset(data_path=data_path, mode='test')
     
     # for unpaired data we still create a paired dataset object but ignore it's target_s, target_a entries
-    train_dataset_unpaired = PointMazePairedDataset(data_path=data_path, mode='train')
+    train_dataset_unpaired = OsilPairedDataset(data_path=data_path, mode='train')
 
     collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
     tloader_paired = DataLoader(train_dataset_paired, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn)

@@ -16,6 +16,8 @@ from tempfile import mkdtemp, mkstemp
 import dmc, utils
 from video import VideoRecorder
 
+from osil.data import collate_fn_for_supervised_osil
+
 from utils import write_yaml, write_pickle
 import envs
 import d4rl; import gym
@@ -220,7 +222,8 @@ class EvaluatorBase:
         # (states, actions, rst_state)
         test_cases = []
         for task_id, var_id in test_task_ids:
-            episodes = test_dataset.raw_data[task_id][var_id]
+            # grab the first 100
+            episodes = test_dataset.raw_data[task_id][var_id][:100]
             
             for ep_id, ep in enumerate(episodes):
                 # random design choice: use the next episode to obtain reset
@@ -375,6 +378,9 @@ class EvaluatorReacherSawyer(EvaluatorBase):
         policy_imgs = []
         demo_imgs = []
 
+        demo_failed_imgs, policy_failed_imgs = [], []
+        failed_case_counter = 0
+
         shuffled_inds = np.random.permutation(len(self.test_cases))
         for test_counter, test_idx in tqdm.tqdm(enumerate(shuffled_inds)):
             test_case = self.test_cases[test_idx]
@@ -408,6 +414,8 @@ class EvaluatorReacherSawyer(EvaluatorBase):
 
             success = False
             total_dist = 0
+            policy_a, policy_s = [], []
+            consecutive_steps = 0
             for _ in demo_action: # since the ep_len is always n it makes sense to do this
                 # step through the policy
                 a = self._get_action(s, goal)
@@ -415,24 +423,47 @@ class EvaluatorReacherSawyer(EvaluatorBase):
                 if test_counter < max_render:
                     policy_imgs.append(self.render(env))
                 _, _, done, _ = env.step(a)
+
+                # log
+                policy_a.append(a)
+                policy_s.append(s)
+
                 s = env.get_obs(remove_target=True)
                 step_dist = np.linalg.norm(s[-3:] - demo_state[-1, -3:], ord=1)
                 total_dist += step_dist
-
-                if not success:
-                    # TODO: is this the right threshold?
-                    success = step_dist < 0.05
+                
+                if step_dist < 0.1:
+                    if consecutive_steps > 5:
+                        success = True
+                    consecutive_steps += 1
+                else:
+                    consecutive_steps = 0
+                
                 if done:
                     break
                 step += 1
 
             rewards.append(-total_dist)
             successes.append(success)
-        
-        policy_imgs = np.stack(policy_imgs, 0)
-        demo_imgs   = np.stack(demo_imgs, 0)
 
-        assert demo_imgs.shape == policy_imgs.shape
+            if not success and failed_case_counter < max_render:
+                # replay both the demo and policy for this index
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(demo_state[0, :7])
+                for a in demo_action:
+                    demo_failed_imgs.append(self.render(env))
+                    env.step(a)
+
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(policy_s[0][:7])
+                for a in policy_a:
+                    policy_failed_imgs.append(self.render(env))
+                    env.step(a)
+
+                failed_case_counter += 1
+        
 
         summary = dict(
             success_rate=float(np.mean(successes)),
@@ -443,12 +474,257 @@ class EvaluatorReacherSawyer(EvaluatorBase):
 
         print(f'success rate: {float(np.mean(successes))}, total_dist: {-float(np.mean(rewards))}')
 
-        print('Plotting examples ...')
+        if policy_imgs:
+            policy_imgs = np.stack(policy_imgs, 0)
+            demo_imgs   = np.stack(demo_imgs, 0)
+
+            assert demo_imgs.shape == policy_imgs.shape
+
+            print('Plotting examples ...')
+            plot_path = self.output_dir / f'examples_{self.mode}.gif'
+
+            pngs = []
+            tmp_dir = mkdtemp()
+            for demo_traj, policy_traj in zip(demo_imgs, policy_imgs):
+                plt.close()
+                fig = plt.figure()
+                plt.subplot(121)
+                plt.imshow(demo_traj)
+                plt.title('demo')
+                plt.xticks([])
+                plt.yticks([])
+                plt.subplot(122)
+                plt.imshow(policy_traj)
+                plt.title('policy')
+                plt.xticks([])
+                plt.yticks([])
+
+                _, filename = mkstemp(dir=tmp_dir)
+                filename += '.png'
+
+                fig.savefig(filename)
+                plt.clf() # clear figure
+                pngs.append(filename)
+
+            plot_images = [imageio.imread(png) for png in pngs]
+            imageio.mimsave(plot_path, plot_images, fps=25)
+            print('Plotting done.')
+
+        if policy_failed_imgs:
+            policy_failed_imgs = np.stack(policy_failed_imgs, 0)
+            demo_failed_imgs   = np.stack(demo_failed_imgs, 0)
+            assert demo_failed_imgs.shape == policy_failed_imgs.shape
+
+            print('Plotting failed examples ...')
+            plot_path = self.output_dir / f'examples_{self.mode}_failed.gif'
+
+            pngs = []
+            tmp_dir = mkdtemp()
+            for demo_traj, policy_traj in zip(demo_failed_imgs, policy_failed_imgs):
+                plt.close()
+                fig = plt.figure()
+                plt.subplot(121)
+                plt.imshow(demo_traj)
+                plt.title('demo')
+                plt.xticks([])
+                plt.yticks([])
+                plt.subplot(122)
+                plt.imshow(policy_traj)
+                plt.title('policy')
+                plt.xticks([])
+                plt.yticks([])
+
+                _, filename = mkstemp(dir=tmp_dir)
+                filename += '.png'
+
+                fig.savefig(filename)
+                plt.clf() # clear figure
+                pngs.append(filename)
+
+            plot_images = [imageio.imread(png) for png in pngs]
+            imageio.mimsave(plot_path, plot_images, fps=25)
+            print('Plotting done.')
+
+class EvaluatorReacherSawyerDT(EvaluatorReacherSawyer):
+
+    def render(self, env):
+        return env.unwrapped.sim.render(256, 256, mode='offscreen')[::-1]
+
+    def _get_goal(self, demo_state, demo_action):
+        device = self.agent.device
+        batch = dict(
+            context_s=torch.as_tensor(demo_state).float().to(device),
+            context_a=torch.as_tensor(demo_action).float().to(device),
+        )
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding, pad_targets=self.conf.use_gpt_decoder)
+        with torch.no_grad():
+            goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
+            goal = goal.squeeze(0)
+
+        return goal.detach().cpu().numpy()
+
+    def _get_action(self, states, actions, goal):
+        device = self.agent.device
+        state_tens = torch.stack([torch.as_tensor(s, device=device, dtype=torch.float) for s in states], 0)
+        goal_tens = torch.as_tensor(goal, device=device, dtype=torch.float)
+        if actions:
+            action_tens = torch.stack([torch.as_tensor(a, device=device, dtype=torch.float) for a in actions], 0)
+        else:
+            action_tens = None
+        action = self.agent.decoder.get_action(state_tens, goal_tens, past_actions=action_tens)
+        return action.detach().cpu().numpy()
+
+    def eval(self):
+        successes, rewards = [], []
+        print(f'Running evaluation on {len(self.test_cases)} {self.mode} cases ...')
+
+        # TODO
+        max_render = 10
+        policy_imgs = []
+        demo_imgs = []
+
+        demo_failed_imgs, policy_failed_imgs = [], []
+        failed_case_counter = 0
+
+        shuffled_inds = np.random.permutation(len(self.test_cases))
+        for test_counter, test_idx in tqdm.tqdm(enumerate(shuffled_inds)):
+            test_case = self.test_cases[test_idx]
+            
+            demo_state      = test_case['context_s']
+            demo_action     = test_case['context_a']
+            new_rst_state   = test_case['rst']
+            demo_target     = demo_state[-1, -3:] # eef of the last step
+
+            env = gym.make(self.conf.env_name)
+
+            # render demo policy
+            if test_counter < max_render:
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(demo_state[0, :7])
+                for a in demo_action:
+                    demo_imgs.append(self.render(env))
+                    env.step(a)
+
+            # set the reset
+            env.reset()
+            env.set_target(demo_target)
+            env.robot_reset_to_qpos(new_rst_state[:7]) # reset qpos
+            s = env.get_obs(remove_target=True)
+
+            states = [s]
+            actions = []
+
+            # set the target
+            goal = self._get_goal(demo_state, demo_action)
+            done = False
+            step = 0
+
+            success = False
+            total_dist = 0
+            policy_a, policy_s = [], []
+            for _ in demo_action: # since the ep_len is always n it makes sense to do this
+                # step through the policy
+
+                a = self._get_action(states, actions, goal)
+                # a = env.action_space.sample()
+                if test_counter < max_render:
+                    policy_imgs.append(self.render(env))
+                _, _, done, _ = env.step(a)
+
+                # log
+                policy_a.append(a)
+                policy_s.append(s)
+
+                s = env.get_obs(remove_target=True)
+                step_dist = np.linalg.norm(s[-3:] - demo_state[-1, -3:], ord=1)
+                total_dist += step_dist
+                
+                states.append(s)
+                actions.append(a)
+
+                if not success:
+                    # TODO: is this the right threshold?
+                    success = step_dist < 0.05
+                if done:
+                    break
+                step += 1
+
+            rewards.append(-total_dist)
+            successes.append(success)
+
+            if not success and failed_case_counter < max_render:
+                # replay both the demo and policy for this index
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(demo_state[0, :7])
+                for a in demo_action:
+                    demo_failed_imgs.append(self.render(env))
+                    env.step(a)
+
+                env.reset()
+                env.set_target(demo_target)
+                s = env.robot_reset_to_qpos(policy_s[0, :7])
+                for a in policy_a:
+                    policy_failed_imgs.append(self.render(env))
+                    env.step(a)
+
+                failed_case_counter += 1
+        
+        policy_imgs = np.stack(policy_imgs, 0)
+        demo_imgs   = np.stack(demo_imgs, 0)
+
+        assert demo_imgs.shape == policy_imgs.shape
+
+        policy_failed_imgs = np.stack(policy_failed_imgs, 0)
+        demo_failed_imgs   = np.stack(demo_failed_imgs, 0)
+        assert demo_failed_imgs.shape == policy_failed_imgs.shape
+
+        summary = dict(
+            success_rate=float(np.mean(successes)),
+            total_dist=-float(np.mean(rewards))
+        )
+        write_yaml(self.output_dir / f'summary_{self.mode}.yaml', summary)
+        write_pickle(self.output_dir / f'example_trajs_{self.mode}.pkl', dict(demo=demo_imgs, policy=policy_imgs))
+
+        print(f'success rate: {float(np.mean(successes))}, total_dist: {-float(np.mean(rewards))}')
+
+        print('Plotting all examples ...')
         plot_path = self.output_dir / f'examples_{self.mode}.gif'
 
         pngs = []
         tmp_dir = mkdtemp()
         for demo_traj, policy_traj in zip(demo_imgs, policy_imgs):
+            plt.close()
+            fig = plt.figure()
+            plt.subplot(121)
+            plt.imshow(demo_traj)
+            plt.title('demo')
+            plt.xticks([])
+            plt.yticks([])
+            plt.subplot(122)
+            plt.imshow(policy_traj)
+            plt.title('policy')
+            plt.xticks([])
+            plt.yticks([])
+
+            _, filename = mkstemp(dir=tmp_dir)
+            filename += '.png'
+
+            fig.savefig(filename)
+            plt.clf() # clear figure
+            pngs.append(filename)
+
+        plot_images = [imageio.imread(png) for png in pngs]
+        imageio.mimsave(plot_path, plot_images, fps=25)
+        print('Plotting done.')
+
+        print('Plotting failed examples ...')
+        plot_path = self.output_dir / f'examples_{self.mode}_failed.gif'
+
+        pngs = []
+        tmp_dir = mkdtemp()
+        for demo_traj, policy_traj in zip(demo_failed_imgs, policy_failed_imgs):
             plt.close()
             fig = plt.figure()
             plt.subplot(121)

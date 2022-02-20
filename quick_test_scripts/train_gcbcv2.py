@@ -28,6 +28,7 @@ import torch
 import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
+from osil.data import SPLITS
 
 
 
@@ -42,19 +43,6 @@ class GCBCDataset(Dataset):
         env_name='',
         goal_dim = -1,
     ):
-                # to enable backward compatible comparision with the other experiment
-        SPLITS = {
-            'reacher_7dof-v1': {
-                'valid': [0, 1, 2, 3, 16, 17, 18, 19],
-                'test': [32, 33, 34, 35, 48, 49, 50, 51],
-            }, 
-            'maze2d-open-v0': {
-                'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
-                'valid': [4], 
-                'test': [13, 9],
-            }
-        }
-        SPLITS['reacher_7dof-v1']['train'] = [i for i in np.arange(64) if i not in SPLITS['reacher_7dof-v1']['valid'] + SPLITS['reacher_7dof-v1']['test']]
         self.splits = SPLITS[env_name]
         # SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
 
@@ -197,8 +185,8 @@ def main(pargs):
     
     data_path = pargs.dataset_path
     train_dataset = GCBCDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, env_name=pargs.env_name)
-    valid_dataset = GCBCDataset(data_path=data_path, mode='valid', env_name=pargs.env_name)
-    test_dataset  = GCBCDataset(data_path=data_path, mode='test', env_name=pargs.env_name)
+    valid_dataset = GCBCDataset(data_path=data_path, mode='valid', nshots_per_task=100, env_name=pargs.env_name)
+    test_dataset  = GCBCDataset(data_path=data_path, mode='test',  nshots_per_task=100, env_name=pargs.env_name)
 
     # ###### visualize the data
     # tbatch_all = next(iter(DataLoader(train_dataset, shuffle=True, batch_size=len(train_dataset), num_workers=0)))

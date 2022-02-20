@@ -20,7 +20,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 from osil.nets import GCBCv2, TOsilv1, TOsilSemisupervised
 from osil.utils import ParamDict
 from osil.eval import EvaluatorPointMazeBase
-from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
+from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
 
 
 from osil.debug import register_pdb_hook
@@ -285,7 +285,7 @@ def main(pargs):
         print('Computing the trajectory embeddings of the dataset ...')
 
         # create a flattened dataset with class_ids
-        dset = PointMazePairedDataset(data_path=data_path, mode='train')
+        dset = OsilPairedDataset(data_path=data_path, mode='train')
         raw_data = dset.raw_data
         
         class_id = 0

@@ -208,6 +208,9 @@ class GCBCv2(BaseLightningModule):
     def ff(self, batch, compute_loss=True):
         x, goal, y = batch
         pred_ac = self(x, goal)
+        # TODO: testing sth for reacher env
+        pred_ac = pred_ac.tanh() # between -1, 1
+
         ret = dict(pred_ac=pred_ac)
         if compute_loss:
             loss = self.bc_loss(pred_ac, y)
@@ -648,6 +651,132 @@ class TrajBERT(nn.Module):
         return tf_outputs
 
 
+
+class GCTrajGPT(nn.Module):
+    """GPT style policy as the decoder"""
+
+    def __init__(self, conf):
+        super().__init__()
+
+        conf = utils.ParamDict(conf)
+        self.conf = conf
+        self.h_dim = conf.hidden_dim
+        self.obs_shape = conf.obs_shape
+        self.ac_dim = conf.ac_dim
+        # self.n_layers = conf.n_layers
+        self.goal_dim = conf.goal_dim
+
+        self.emb_timestep = None
+        self.emb_state, self.emb_action = None, None
+        self.gpt: Optional[GPT2Model] = None
+        self._build_network()
+
+    def _build_network(self):
+        """ builds emb_state, emb_action, emb_timestep, transformer networks """
+        self.emb_timestep = nn.Embedding(self.conf.max_ep_len, self.conf.hidden_dim)
+
+        obs_shape = self.obs_shape
+        h_dim = self.h_dim
+        ac_dim = self.ac_dim
+        goal_dim = self.goal_dim
+
+        if len(obs_shape) != 1:
+            raise ValueError('obs_shape should have one dimension.')
+
+        self.emb_state = nn.Linear(obs_shape[0] + goal_dim, h_dim)
+        self.emb_action = nn.Linear(ac_dim + goal_dim, h_dim)
+
+        gpt_config = transformers.GPT2Config(
+            vocab_size=1,
+            n_embd=h_dim,
+            n_layer=3,
+            n_head=1,
+            n_inner=h_dim,
+            # reserve one extra token for cls which will be added in the model
+            n_positions=self.conf.max_ep_len,
+        )
+
+        self.gpt = GPT2Model(gpt_config)
+
+        self.output_ac_nn = nn.Linear(h_dim, ac_dim)
+
+    def bc_loss(self, pred_ac, target_ac):
+     
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+        loss = F.mse_loss(pred_ac, target_ac)
+        
+        return loss
+
+    def forward(self, states, actions, attn_masks, goals):
+        # states: B, T, d_s
+        # actions: B, T, d_a
+        # goals: B, d_g
+        # masks: B, T (it includes the zero padded trajectories that are shorter)
+
+        B, T, _ = states.size()
+        timesteps = torch.arange(T).to(device=states.device, dtype=torch.long)
+
+        goal_broadcasted = goals.unsqueeze(1).repeat(1, T, 1)
+        state_goal_input = torch.cat([states, goal_broadcasted], -1)
+        action_goal_input = torch.cat([actions, goal_broadcasted], -1)
+
+        state_emb_in = self.emb_state(state_goal_input) + self.emb_timestep(timesteps)
+        action_emb_in = self.emb_action(action_goal_input) + self.emb_timestep(timesteps)
+
+        input_tokens = einops.rearrange([state_emb_in, action_emb_in], 'i B T h -> B (T i) h')
+        mask_tokens = einops.rearrange([attn_masks, attn_masks], 'i B T -> B (T i)')
+
+        tf_outputs = self.gpt(inputs_embeds=input_tokens, attention_mask=mask_tokens)
+
+        return tf_outputs
+
+    def get_state_action_embs(self, states, actions, attn_mask, goals):
+        tf_outputs = self(states, actions, attn_mask, goals)
+        output_tokens = tf_outputs['last_hidden_state']
+        state_emb, action_emb = output_tokens[:, ::2, :], output_tokens[:, 1::2, :]
+        return state_emb, action_emb
+
+    def ff(self, states, actions, attn_mask, goals, compute_loss=True):
+        state_emb, action_emb = self.get_state_action_embs(states, actions, attn_mask, goals)
+        
+        pred_ac = self.output_ac_nn(state_emb)
+
+        ret = dict(pred_ac=pred_ac)
+        if compute_loss:
+            loss = self.bc_loss(pred_ac[attn_mask.bool()], actions[attn_mask.bool()])
+            ret['loss']=loss
+
+        return ret
+
+    def get_action(self, cur_past_states, goal, past_actions=None):
+        # cur_past_states: [T, d_s]
+        # past_actions: [T-1, d_a]
+        # goal: [d_g]
+        # return action: [d_a]
+
+        # add a dummy action, make a ff pass 
+        # and just use the last state emb (which won't see the dummy anyways)
+
+        T, _ = cur_past_states.size()
+
+        if past_actions is None:
+            actions = torch.ones(1, self.ac_dim).to(cur_past_states)
+        else:
+            assert past_actions.shape[0] == T - 1
+            actions = torch.cat([past_actions, torch.ones(1, self.ac_dim).to(past_actions)], 0)
+        
+        states = cur_past_states[None]
+        actions = actions[None]
+        goals = goal[None]
+        attn_mask = torch.ones(1, T).to(cur_past_states).long()
+
+        output_dict = self.ff(states, actions, attn_mask, goals, compute_loss=False)
+        next_action = output_dict['pred_ac'][0, -1] # take b=0, and t=T
+        return next_action
+
+
+
 ##################################################
 ################### Traphormer ###################
 ##################################################
@@ -942,14 +1071,24 @@ class TOsilv1(BaseLightningModule):
         self.goal_dim = self.conf.goal_dim
         self.goal_emb = nn.Linear(self.conf.hidden_dim, self.goal_dim)
 
-        dec_config = utils.ParamDict(
-            hidden_dim=self.conf.hidden_dim,
-            obs_dim=self.conf.obs_dim,
-            ac_dim=self.conf.ac_dim,
-            goal_dim=self.conf.goal_dim,
-        )
+        if self.conf.use_gpt_decoder:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_shape=(self.conf.obs_dim, ),
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+                max_ep_len=self.conf.max_ep_len,
+            )
+            self.decoder = GCTrajGPT(dec_config)
+        else:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_dim=self.conf.obs_dim,
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+            )
 
-        self.decoder = GCBCv2(dec_config)
+            self.decoder = GCBCv2(dec_config)
 
     def get_task_emb(self, context_s, context_a, context_mask):
         enc_output = self.encoder(context_s, context_a, context_mask)
@@ -962,14 +1101,22 @@ class TOsilv1(BaseLightningModule):
         context_a       = batch['context_a']
         context_mask    = batch['attention_mask']
 
+        # shape B,
         task_emb = self.get_task_emb(context_s, context_a, context_mask)
 
-        target_s    = batch['target_s']
-        target_a    = batch['target_a']
-        ptr         = batch['ptr']
+        if self.conf.use_gpt_decoder:
+            # shape B, T
+            target_s    = batch['target_s']
+            target_a    = batch['target_a']
+            target_mask = batch['target_mask']
+            ret = self.decoder.ff(target_s, target_a, target_mask, task_emb, compute_loss=compute_loss)
+        else:
+            target_s    = batch['target_s']
+            target_a    = batch['target_a']
+            ptr         = batch['ptr']
 
-        task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
-        ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+            task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
+            ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
         return ret
 
 

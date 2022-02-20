@@ -19,7 +19,7 @@ from snapshot import load_snapshot
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--render', action='store_true', help='Render trajectories')
-    # parser.add_argument('--noisy', action='store_true', help='Noisy actions')
+    parser.add_argument('--noisy', action='store_true', help='Noisy actions')
     # parser.add_argument('--env_name', type=str, default='maze2d-large-v1', help='Maze type')
     parser.add_argument('--output_suffix', type=str, default='osil_dataset', help='the suffix for output dir')
     # parser.add_argument('--num_tasks', type=int, default=10, help='Max number of goals')
@@ -81,6 +81,10 @@ def main():
                             # step is a dummy value in eval_mode=True it should not be used
                             act = agent.act(s, step=0, eval_mode=True)
 
+                        if args.noisy:
+                            act = act + np.random.randn(*act.shape) * 0.5
+
+                        act = np.clip(act, -1.0, 1.0)
                         # here we have s, act, target
                         obs = env.get_obs(remove_target=True)
                         ep['state'].append(obs)

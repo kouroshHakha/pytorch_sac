@@ -19,8 +19,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.nets import TOsilv1
 from osil.utils import ParamDict
-from osil.eval import EvaluatorPointMazeBase
-from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
+from osil.eval import EvaluatorBase, EvaluatorPointMazeBase, EvaluatorReacherSawyer, EvaluatorReacherSawyerDT
+from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -29,8 +29,7 @@ from torch.utils.data import Dataset
 import torch
 import d4rl; import gym
 
-
-class Evaluator(EvaluatorPointMazeBase):
+class TOsilEvaluator(EvaluatorBase):
 
     def _get_goal(self, demo_state, demo_action):
         device = self.agent.device
@@ -38,7 +37,7 @@ class Evaluator(EvaluatorPointMazeBase):
             context_s=torch.as_tensor(demo_state).float().to(device),
             context_a=torch.as_tensor(demo_action).float().to(device),
         )
-        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding)
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding, pad_targets=self.conf.use_gpt_decoder)
         with torch.no_grad():
             goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
             goal = goal.squeeze(0)
@@ -49,10 +48,13 @@ class Evaluator(EvaluatorPointMazeBase):
         device = self.agent.device
         state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
         goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+
         pred_ac = self.agent.decoder(state_tens, goal_tens)
         a = pred_ac.squeeze(0).detach().cpu().numpy()
         return a
 
+class EvaluatorPM(EvaluatorPointMazeBase, TOsilEvaluator): pass
+class EvaluatorReacher(EvaluatorReacherSawyer, TOsilEvaluator): pass
 
 def _parse_args():
 
@@ -71,7 +73,8 @@ def _parse_args():
     parser.add_argument('--dataset_path', type=str)
     parser.add_argument('--env_name', type=str)
     # other params
-    parser.add_argument('--num_shots', default=-1, type=int, 
+    parser.add_argument('--use_gpt_decoder', action='store_true')
+    parser.add_argument('--num_shots', '-ns', default=-1, type=int, 
                         help='number of shots per each task variation \
                             (-1 means max number of shots available in the dataset)')
     # checkpoint resuming and testing
@@ -89,16 +92,16 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'tosilv1_pm'
+    exp_name = f'tosilv1_{pargs.env_name}'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
     data_path = pargs.dataset_path
-    train_dataset = PointMazePairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots)
-    valid_dataset = PointMazePairedDataset(data_path=data_path, mode='valid')
-    test_dataset = PointMazePairedDataset(data_path=data_path, mode='test')
+    train_dataset = OsilPairedDataset(data_path=data_path, mode='train', nshots_per_task=pargs.num_shots, env_name=pargs.env_name)
+    valid_dataset = OsilPairedDataset(data_path=data_path, mode='valid', nshots_per_task=100, env_name=pargs.env_name)
+    test_dataset = OsilPairedDataset(data_path=data_path, mode='test',   nshots_per_task=100, env_name=pargs.env_name)
 
-    collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding)
+    collate_fn = partial(collate_fn_for_supervised_osil, padding=pargs.max_padding, pad_targets=pargs.use_gpt_decoder)
     tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn, pin_memory=True)
     vloader = DataLoader(valid_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0, collate_fn=collate_fn, pin_memory=True)
     batch_elem = train_dataset[0]
@@ -158,6 +161,7 @@ def main(pargs):
         goal_dim=pargs.goal_dim,
         lr=pargs.lr,
         wd=pargs.weight_decay,
+        use_gpt_decoder=pargs.use_gpt_decoder,
     )
 
     args_var = vars(pargs)
@@ -214,8 +218,14 @@ def main(pargs):
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
 
-    evaluator = Evaluator(pargs, agent, eval_output_dir, test_dataset)
-    evaluator.eval()
+    if pargs.env_name.startswith('maze2d'):
+        evaluator_cls = EvaluatorPM
+    elif pargs.env_name.startswith('reacher'):
+        evaluator_cls = EvaluatorReacher
+        # evaluator_cls = EvaluatorReacherSawyerDT
+    evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
+    evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
+
 
 
 if __name__ == '__main__':

@@ -208,8 +208,25 @@ class TestOsilPM(Dataset):
         return gym.make(self.name)
 
 ###################################################
+# to enable backward compatible comparision with the other experiment
 
-class PointMazePairedDataset(Dataset):
+SPLITS = {
+    'reacher_7dof-v1': {
+        # 'valid': [0, 1, 2, 3, 16, 17, 18, 19],
+        'valid': [8, 25, 44, 41, 45, 32, 57, 34],
+        'test':  [29, 22, 2, 4, 0, 37, 17, 35],
+        # 'test': [32, 33, 34, 35, 48, 49, 50, 51],
+    }, 
+    'maze2d-open-v0': {
+        'valid': [3], 
+        'test': [6, 7],
+    }
+}
+SPLITS['reacher_7dof-v1']['train'] = [i for i in np.arange(64) if i not in SPLITS['reacher_7dof-v1']['valid'] + SPLITS['reacher_7dof-v1']['test']]
+SPLITS['maze2d-open-v0']['train'] = [i for i in np.arange(15) if i not in SPLITS['maze2d-open-v0']['valid'] + SPLITS['maze2d-open-v0']['test']]
+
+
+class OsilPairedDataset(Dataset):
 
     def __init__(
         self,
@@ -217,35 +234,55 @@ class PointMazePairedDataset(Dataset):
         mode='train', # valid / test are also posssible
         seed=0,
         nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
+        env_name='',
     ):
-        SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
+        # SPLITS = {'train': (0, 0.8), 'valid': (0.8, 0.9), 'test': (0.9, 1)}
+        self.splits = SPLITS[env_name]
+
 
         self.data_path = Path(data_path)
         collector = OsilDataCollector.load(data_path)
         self.raw_data = collector.data
 
-        task_name_list = []
-        ep_len_list = []
+        # task_name_list = []
+        class_to_task_map = {}
+        class_id = 0
         for task_id in self.raw_data:
-            for var_id in self.raw_data[task_id]:
-                task_name_list.append((task_id, var_id))
-                episodes = self.raw_data[task_id][var_id]
-                max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
-                if max_ep_idx < 2:
-                    print(f'You need at least two examples per task to make an osil statement, using two instead.')
-                    max_ep_idx = 2
-                if max_ep_idx > len(episodes):
-                    print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
-                ep_len_list.append(max_ep_idx)
-        np.random.seed(seed+10)
-        inds = np.random.permutation(np.arange(len(task_name_list)))
+            for var_id in sorted(self.raw_data[task_id].keys()):
+                class_to_task_map[class_id] = (task_id, var_id)
+                class_id += 1
+        self.allowed_ids = [class_to_task_map[i] for i in self.splits[mode]]
+
+
+        self.ep_lens = []
+        for task_id, var_id in self.allowed_ids:
+            episodes = self.raw_data[task_id][var_id]
+            max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
+            if max_ep_idx < 2:
+                print(f'You need at least two examples per task to make an osil statement, using two instead.')
+                max_ep_idx = 2
+            if max_ep_idx > len(episodes):
+                print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
+            self.ep_lens.append(max_ep_idx)
+            # for var_id in self.raw_data[task_id]:
+                # task_name_list.append((task_id, var_id))
+                # episodes = self.raw_data[task_id][var_id]
+                # max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
+                # if max_ep_idx < 2:
+                #     print(f'You need at least two examples per task to make an osil statement, using two instead.')
+                #     max_ep_idx = 2
+                # if max_ep_idx > len(episodes):
+                #     print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
+                # ep_len_list.append(max_ep_idx)
+        # np.random.seed(seed+10)
+        # inds = np.random.permutation(np.arange(len(task_name_list)))
         
-        sratio, eratio = SPLITS[mode]
-        s = int(sratio * len(inds))
-        e = int(eratio * len(inds))
-        assert e > s, 'Not enough data is present for proper split'
-        self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
-        self.ep_lens = [ep_len_list[int(i)] for i in inds[s:e]]
+        # sratio, eratio = SPLITS[mode]
+        # s = int(sratio * len(inds))
+        # e = int(eratio * len(inds))
+        # assert e > s, 'Not enough data is present for proper split'
+        # self.allowed_ids = [task_name_list[int(i)] for i in inds[s:e]]
+        # self.ep_lens = [ep_len_list[int(i)] for i in inds[s:e]]
         self.n_episodes = sum(self.ep_lens)
         
     def __len__(self):
@@ -265,7 +302,23 @@ class PointMazePairedDataset(Dataset):
             target_a=torch.as_tensor(episodes[t_idx]['action'], dtype=torch.float)
         )
 
-def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None):
+def pad_tokens(batch, key, padding):
+    elem = batch[0]
+    token_shape = (len(batch), padding) + elem[key].shape[1:]
+    token = torch.zeros(token_shape, dtype=elem[key].dtype, device=elem[key].device) 
+    attn = torch.zeros(token_shape[:2], dtype=torch.long, device=elem[key].device)
+
+    for e_idx, e in enumerate(batch):
+        # left padding
+        seq_len = min(len(e[key]), padding)
+        if seq_len != len(e[key]):
+            print(f'Cutting off a trajectory (length = {len(e[key])}) because it is too long!')
+        token[e_idx, :seq_len] = e[key][:seq_len]
+        attn[e_idx, :seq_len] = 1
+
+    return token, attn
+
+def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None, pad_targets=False):
     # Note: we will have dynamic batch size for training the MLP part which should be ok? not sure!
     # you should use torch.repeat_interleave(x, ptr, dim=0) to repeat 
     # x with a frequency of values in ptr across dim=0 (this is needed in the decoder training)
@@ -280,27 +333,34 @@ def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None):
     for key in elem:
         if key.startswith(('context_s', 'context_a')):
             # zero pad and then stack + create attention mask
-            token_shape = (len(batch), padding) + elem[key].shape[1:]
-            ret[key] = torch.zeros(token_shape, dtype=elem[key].dtype, device=elem[key].device) 
-            if attn_mask is None:
-                attn_mask = torch.zeros(token_shape[:2], dtype=torch.long, device=elem[key].device)
-            for e_idx, e in enumerate(batch):
-                # left padding
-                seq_len = min(len(e[key]), padding)
-                if seq_len != len(e[key]):
-                    print(f'Cutting off a trajectory (length = {len(e[key])}) because it is too long!')
-                ret[key][e_idx, :seq_len] = e[key][:seq_len]
-                attn_mask[e_idx, :seq_len] = 1
-            
+            # token_shape = (len(batch), padding) + elem[key].shape[1:]
+            # ret[key] = torch.zeros(token_shape, dtype=elem[key].dtype, device=elem[key].device) 
+            # if attn_mask is None:
+            #     attn_mask = torch.zeros(token_shape[:2], dtype=torch.long, device=elem[key].device)
+            # for e_idx, e in enumerate(batch):
+            #     # left padding
+            #     seq_len = min(len(e[key]), padding)
+            #     if seq_len != len(e[key]):
+            #         print(f'Cutting off a trajectory (length = {len(e[key])}) because it is too long!')
+            #     ret[key][e_idx, :seq_len] = e[key][:seq_len]
+            #     attn_mask[e_idx, :seq_len] = 1
+            ret[key], attn_mask = pad_tokens(batch, key, padding)
             if 'attention_mask' not in ret and attn_mask is not None:
                 # makes sure we only create attn_mask once based on c_s or c_a
                 ret['attention_mask'] = attn_mask
+
+
             used_keys.add(key)
 
         elif key.startswith(('target_s', 'target_a')):
-            ret[key] = torch.cat([e[key].view(-1, elem[key].shape[-1]) for e in batch], 0)
-            if 'ptr' not in ret:
-                ret['ptr'] = torch.tensor([len(e[key]) for e in batch])
+            if pad_targets:
+                ret[key], attn = pad_tokens(batch, key, padding)
+                if 'target_mask' not in ret and attn is not None:
+                    ret['target_mask'] = attn
+            else:
+                ret[key] = torch.cat([e[key].view(-1, elem[key].shape[-1]) for e in batch], 0)
+                if 'ptr' not in ret:
+                    ret['ptr'] = torch.tensor([len(e[key]) for e in batch])
             used_keys.add(key)
 
     for key in elem:

@@ -18,7 +18,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 import pytorch_lightning as pl
 
-from osil.data import collate_fn_for_supervised_osil, PointMazePairedDataset
+from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
 from osil.nets import TOsilv1, TOsilSemisupervised
 from utils import read_yaml, write_yaml
 from osil.debug import register_pdb_hook
@@ -55,7 +55,7 @@ def main(pargs):
     print(f'best_idx = {best_ckpt_idx}')
 
     # create a flattened dataset with class_ids
-    dset = PointMazePairedDataset(data_path=data_path, mode='train')
+    dset = OsilPairedDataset(data_path=data_path, mode='train')
     SPLITS = {
         'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
         'valid': [4], 

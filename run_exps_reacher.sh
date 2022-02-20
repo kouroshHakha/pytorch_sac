@@ -1,24 +1,26 @@
 
 # goal conditioned bc
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots 100 -wb --run_name ns_100
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots  50 -wb --run_name ns_50
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots  25 -wb --run_name ns_25
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots  10 -wb --run_name ns_10
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots   5 -wb --run_name ns_5
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots   4 -wb --run_name ns_4
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots   3 -wb --run_name ns_3
-CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 40000 --dataset_path reacher_7dof-v1_osil_dataset_v2/ --env_name reacher_7dof-v1 --num_shots   2 -wb --run_name ns_2
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots 500 -wb --run_name ns_500
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots 100 -wb --run_name ns_100
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  50 -wb --run_name ns_50
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  25 -wb --run_name ns_25
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  10 -wb --run_name ns_10
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   5 -wb --run_name ns_5
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   4 -wb --run_name ns_4
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   3 -wb --run_name ns_3
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   2 -wb --run_name ns_2
 
 
 # supervised osil v1
-CUDA_VISIBLE_DEVICES=0 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots 100 -wb --run_name tosil_maze2d_open_ns_100
-CUDA_VISIBLE_DEVICES=0 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots  50 -wb --run_name tosil_maze2d_open_ns_50
-CUDA_VISIBLE_DEVICES=1 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots  25 -wb --run_name tosil_maze2d_open_ns_25
-CUDA_VISIBLE_DEVICES=1 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots  10 -wb --run_name tosil_maze2d_open_ns_10
-CUDA_VISIBLE_DEVICES=2 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots   5 -wb --run_name tosil_maze2d_open_ns_5
-CUDA_VISIBLE_DEVICES=0 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots   4 -wb --run_name tosil_maze2d_open_ns_4
-CUDA_VISIBLE_DEVICES=1 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots   3 -wb --run_name tosil_maze2d_open_ns_3
-CUDA_VISIBLE_DEVICES=2 python quick_test_scripts/train_tosilv1_pm.py -bs 128 --max_steps 10000 --dataset_path maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --num_shots   2 -wb --run_name tosil_maze2d_open_ns_2
+CUDA_VISIBLE_DEVICES=2 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots 500 -wb --run_name ns_500
+CUDA_VISIBLE_DEVICES=2 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots 100 -wb --run_name ns_100
+CUDA_VISIBLE_DEVICES=3 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  50 -wb --run_name ns_50
+CUDA_VISIBLE_DEVICES=3 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  25 -wb --run_name ns_25
+CUDA_VISIBLE_DEVICES=4 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots  10 -wb --run_name ns_10
+CUDA_VISIBLE_DEVICES=4 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   5 -wb --run_name ns_5
+CUDA_VISIBLE_DEVICES=5 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   4 -wb --run_name ns_4
+CUDA_VISIBLE_DEVICES=5 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   3 -wb --run_name ns_3
+CUDA_VISIBLE_DEVICES=6 python quick_test_scripts/train_tosilv1.py --max_padding 64 -bs 128 --max_steps 10000 --dataset_path reacher_7dof-v1_osil_dataset_v4/ --env_name reacher_7dof-v1 --num_shots   2 -wb --run_name ns_2
 
 # pseudo supervised osil (gcbc as decoder + pretrained encoder)
 CUDA_VISIBLE_DEVICES=0 python quick_test_scripts/train_gcbcv2_w_osil_embedding.py -bs 128 --max_steps 10000  --dataset_path ./maze2d-open-v0_osil_short_trajs_v2/ --env_name maze2d-open-v0 --encoder_ckpt wandb_logs/osil/3647wkjm/checkpoints/cgl-step\=6089-valid_loss\=0.0196-epoch\=608.ckpt  --model osil -wb --run_name gcbc+osil_emb_ns100
