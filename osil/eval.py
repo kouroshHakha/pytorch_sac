@@ -222,7 +222,7 @@ class EvaluatorBase:
         # (states, actions, rst_state)
         test_cases = []
         for task_id, var_id in test_task_ids:
-            # grab the first 100
+            # TODO: grab the first 100
             episodes = test_dataset.raw_data[task_id][var_id][:100]
             
             for ep_id, ep in enumerate(episodes):
@@ -748,3 +748,31 @@ class EvaluatorReacherSawyerDT(EvaluatorReacherSawyer):
         plot_images = [imageio.imread(png) for png in pngs]
         imageio.mimsave(plot_path, plot_images, fps=25)
         print('Plotting done.')
+
+
+class TOsilEvaluator(EvaluatorBase):
+
+    def _get_goal(self, demo_state, demo_action):
+        device = self.agent.device
+        batch = dict(
+            context_s=torch.as_tensor(demo_state).float().to(device),
+            context_a=torch.as_tensor(demo_action).float().to(device),
+        )
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding, pad_targets=self.conf.use_gpt_decoder)
+        with torch.no_grad():
+            goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
+            goal = goal.squeeze(0)
+
+        return goal.detach().cpu().numpy()
+
+    def _get_action(self, state, goal):
+        device = self.agent.device
+        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
+        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+
+        pred_ac = self.agent.decoder(state_tens, goal_tens)
+        a = pred_ac.squeeze(0).detach().cpu().numpy()
+        return a
+
+class OsilEvaluatorPM(EvaluatorPointMazeBase, TOsilEvaluator): pass
+class OsilEvaluatorReacher(EvaluatorReacherSawyer, TOsilEvaluator): pass

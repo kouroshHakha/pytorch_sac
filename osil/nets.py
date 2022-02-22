@@ -1071,7 +1071,9 @@ class TOsilv1(BaseLightningModule):
         self.goal_dim = self.conf.goal_dim
         self.goal_emb = nn.Linear(self.conf.hidden_dim, self.goal_dim)
 
-        if self.conf.use_gpt_decoder:
+
+        self.use_gpt_decoder = self.conf.get('use_gpt_decoder', False)
+        if self.use_gpt_decoder:
             dec_config = utils.ParamDict(
                 hidden_dim=self.conf.hidden_dim,
                 obs_shape=(self.conf.obs_dim, ),
@@ -1101,10 +1103,15 @@ class TOsilv1(BaseLightningModule):
         context_a       = batch['context_a']
         context_mask    = batch['attention_mask']
 
+        #### TODO: remove
+        if 'context_class_id' in batch:
+            class_acc = (batch['context_class_id'] == batch['target_class_id']).float().mean()
+            self.log('class_acc', class_acc, prog_bar=True)
+
         # shape B,
         task_emb = self.get_task_emb(context_s, context_a, context_mask)
 
-        if self.conf.use_gpt_decoder:
+        if self.use_gpt_decoder:
             # shape B, T
             target_s    = batch['target_s']
             target_a    = batch['target_a']
