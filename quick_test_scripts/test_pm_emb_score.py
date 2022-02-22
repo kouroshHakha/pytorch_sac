@@ -58,13 +58,14 @@ def main(pargs):
     demo_states, demo_actions, demo_masks = [], [], []
     classes = []
     for task_id in raw_data:
-        for var_id in raw_data[task_id]:
+        for var_id in sorted(raw_data[task_id].keys()):
+            # TODO: focus on the first 100 for now
             episodes = [
                 dict(
                     context_s=torch.as_tensor(ep['state'], dtype=torch.float),
                     context_a=torch.as_tensor(ep['action'], dtype=torch.float),
                 )
-            for ep in raw_data[task_id][var_id]
+            for ep in raw_data[task_id][var_id][:100]
             ]
             episodes_padded = collate_fn_for_supervised_osil(episodes, padding=pargs.max_padding)
             demo_states.append(episodes_padded['context_s'])
@@ -174,7 +175,7 @@ def main(pargs):
     # compute trajectory retrieval scores
     print('Computing trajectory retrieval score ...')
     # last k should be 99 since except the index itself there are 99 others
-    k_list = [1, 3, 5, 10, 25, 50, 100]
+    k_list = [1, 3, 5, 10, 25, 50, 100, 200]
 
     tr_score_list = []
     for k in tqdm.tqdm(k_list):

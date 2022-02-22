@@ -19,7 +19,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.nets import TOsilv1
 from osil.utils import ParamDict
-from osil.eval import EvaluatorBase, EvaluatorPointMazeBase, EvaluatorReacherSawyer, EvaluatorReacherSawyerDT
+from osil.eval import OsilEvaluatorPM, OsilEvaluatorReacher, EvaluatorReacherSawyerDT
 from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
 
 from osil.debug import register_pdb_hook
@@ -29,32 +29,6 @@ from torch.utils.data import Dataset
 import torch
 import d4rl; import gym
 
-class TOsilEvaluator(EvaluatorBase):
-
-    def _get_goal(self, demo_state, demo_action):
-        device = self.agent.device
-        batch = dict(
-            context_s=torch.as_tensor(demo_state).float().to(device),
-            context_a=torch.as_tensor(demo_action).float().to(device),
-        )
-        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding, pad_targets=self.conf.use_gpt_decoder)
-        with torch.no_grad():
-            goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
-            goal = goal.squeeze(0)
-
-        return goal.detach().cpu().numpy()
-
-    def _get_action(self, state, goal):
-        device = self.agent.device
-        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
-        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
-
-        pred_ac = self.agent.decoder(state_tens, goal_tens)
-        a = pred_ac.squeeze(0).detach().cpu().numpy()
-        return a
-
-class EvaluatorPM(EvaluatorPointMazeBase, TOsilEvaluator): pass
-class EvaluatorReacher(EvaluatorReacherSawyer, TOsilEvaluator): pass
 
 def _parse_args():
 
@@ -219,9 +193,9 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
 
     if pargs.env_name.startswith('maze2d'):
-        evaluator_cls = EvaluatorPM
+        evaluator_cls = OsilEvaluatorPM
     elif pargs.env_name.startswith('reacher'):
-        evaluator_cls = EvaluatorReacher
+        evaluator_cls = OsilEvaluatorReacher
         # evaluator_cls = EvaluatorReacherSawyerDT
     evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
     evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()

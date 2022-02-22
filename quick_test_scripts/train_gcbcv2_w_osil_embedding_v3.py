@@ -20,9 +20,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.nets import GCBCv2, TOsilv1, TOsilSemisupervised
 from osil.utils import ParamDict
-from osil.eval import EvaluatorPointMazeBase
-from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset
-
+from osil.eval import OsilEvaluatorPM, OsilEvaluatorReacher
+from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset, SPLITS
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -33,6 +32,8 @@ import d4rl; import gym
 
 from osil_gen_data.data_collector import OsilDataCollector
 
+
+MAX_NUM_EPS = 100
 
 """
 # at decoder level we will have variable batch size, but that's ok
@@ -52,7 +53,7 @@ dict(
 we can plot estimate of acc for picking the correct context_s, context_a as a function of epoch ...
 """
 
-class PointmassEmbBCDataset(Dataset):
+class EmbBCDataset(Dataset):
 
     def __init__(
         self,
@@ -66,13 +67,9 @@ class PointmassEmbBCDataset(Dataset):
         goal_is_self_embedding=True, # goal is the self trajectory embedding otherwise its random neighbor embedding
         metric='euclidean',
         k_neighbor=100,
+        env_name='',
     ):  
-        # to enable backward compatible comparision with the other experiment
-        SPLITS = {
-            'train': [3, 7, 12, 6, 8, 2, 10, 5, 11, 14, 1, 0], 
-            'valid': [4], 
-            'test': [13, 9],
-        }
+        self.splits = SPLITS[env_name]
 
         self.data_path = Path(data_path)
         collector = OsilDataCollector.load(data_path)
@@ -83,11 +80,10 @@ class PointmassEmbBCDataset(Dataset):
         class_to_task_map = {}
         class_id = 0
         for task_id in self.raw_data:
-            for var_id in self.raw_data[task_id]:
+            for var_id in sorted(self.raw_data[task_id].keys()):
                 class_to_task_map[class_id] = (task_id, var_id)
                 class_id += 1
-        # task_to_class_map = {v: k for k, v in class_to_task_map.items()}
-        self.allowed_ids = [class_to_task_map[i] for i in SPLITS[mode]]
+        self.allowed_ids = [class_to_task_map[i] for i in self.splits[mode]]
         
         self.nn_s, self.nn_a = [], []
 
@@ -104,7 +100,7 @@ class PointmassEmbBCDataset(Dataset):
 
 
         for idx, (emb, state, action, class_id) in enumerate(zip(embs, states, actions, classes)):
-            if class_id not in SPLITS[mode]:
+            if class_id not in self.splits[mode]:
                 continue
 
             self.states.append(state)
@@ -168,28 +164,6 @@ class PointmassEmbBCDataset(Dataset):
             target_emb=t_emb,
         )
 
-class Evaluator(EvaluatorPointMazeBase):
-
-    def _get_goal(self, demo_state, demo_action):
-        device = self.agent.device
-        batch = dict(
-            context_s=torch.as_tensor(demo_state).float().to(device),
-            context_a=torch.as_tensor(demo_action).float().to(device),
-        )
-        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding)
-        with torch.no_grad():
-            goal = self.agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
-            goal = goal.squeeze(0)
-
-        return goal.detach().cpu().numpy()
-
-    def _get_action(self, state, goal):
-        device = self.agent.device
-        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
-        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
-        pred_ac = self.agent.decoder(state_tens, goal_tens)
-        a = pred_ac.squeeze(0).detach().cpu().numpy()
-        return a
 
 def _parse_args():
 
@@ -207,6 +181,7 @@ def _parse_args():
     parser.add_argument('--env_name', type=str)
     parser.add_argument('--max_padding', default=128, type=int)
     # other params
+    parser.add_argument('--use_gpt_decoder', action='store_true')
     # parser.add_argument('--num_shots', default=-1, type=int, 
     #                     help='number of shots per each task variation \
     #                         (-1 means max number of shots available in the dataset)')
@@ -231,7 +206,7 @@ def _parse_args():
 
 
 def main(pargs):
-    exp_name = f'gcbc+emb_pm_v3'
+    exp_name = f'gcbc+emb_v3_{pargs.env_name}'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
 
@@ -257,7 +232,7 @@ def main(pargs):
         print('Computing the trajectory embeddings of the dataset ...')
 
         # create a flattened dataset with class_ids
-        dset = OsilPairedDataset(data_path=data_path, mode='train')
+        dset = OsilPairedDataset(data_path=data_path, mode='train', env_name=pargs.env_name)
         raw_data = dset.raw_data
         
         class_id = 0
@@ -265,16 +240,17 @@ def main(pargs):
         states, actions = [], []
         classes = []
         for task_id in raw_data:
-            for var_id in raw_data[task_id]:
+            for var_id in sorted(raw_data[task_id].keys()):
+                # TODO: limit yourself to first 100 trajs per each task
                 episodes = [
                     dict(
                         context_s=torch.as_tensor(ep['state'], dtype=torch.float),
                         context_a=torch.as_tensor(ep['action'], dtype=torch.float),
                     )
-                for ep in raw_data[task_id][var_id]
+                for ep in raw_data[task_id][var_id][:MAX_NUM_EPS]
                 ]
-                states += [ep['state'] for ep in raw_data[task_id][var_id]]
-                actions += [ep['action'] for ep in raw_data[task_id][var_id]]
+                states += [ep['state'] for ep in raw_data[task_id][var_id][:MAX_NUM_EPS]]
+                actions += [ep['action'] for ep in raw_data[task_id][var_id][:MAX_NUM_EPS]]
 
                 episodes_padded = collate_fn(episodes)
                 demo_states.append(episodes_padded['context_s'])
@@ -308,13 +284,16 @@ def main(pargs):
         # demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
         # emb_content = dict(embs=demo_2d, states=states, actions=actions, classes=classes)
         emb_content = dict(embs=demo_embs, states=states, actions=actions, classes=classes)
+        print('Writing the pickle file ...')
         write_pickle(emb_file, emb_content)
     else:
         print('Loading pre-computed trajectory embeddings of the dataset ...')
         emb_content = read_pickle(emb_file)
     
-    train_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='train', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
-    valid_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='valid', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor)
+
+    train_dataset = EmbBCDataset(data_path, **emb_content, mode='train', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor, env_name=pargs.env_name)
+    valid_dataset = EmbBCDataset(data_path, **emb_content, mode='valid', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor, env_name=pargs.env_name)
+    test_dataset  = EmbBCDataset(data_path, **emb_content, mode='test', goal_is_self_embedding=pargs.self_emb, k_neighbor=pargs.k_neighbor, env_name=pargs.env_name)
 
     # # calculate the accuracy per number of epoch
     # n_epoch = 200
@@ -438,6 +417,7 @@ def main(pargs):
     if train:
         trainer.fit(agent, train_dataloaders=[tloader], val_dataloaders=[vloader])
         eval_output_dir = Path(trainer.checkpoint_callback.best_model_path).parent
+        ckpt_callback.to_yaml(eval_output_dir / 'model_ckpts.yaml')
         agent = agent.load_from_checkpoint(trainer.checkpoint_callback.best_model_path)
     else:
         eval_output_dir = pargs.eval_path
@@ -445,10 +425,14 @@ def main(pargs):
             eval_output_dir = str(Path(ckpt).parent.resolve())
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
-    valid_eval_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='valid')
-    test_eval_dataset = PointmassEmbBCDataset(data_path, **emb_content, mode='test')
-    Evaluator(pargs, agent, eval_output_dir, valid_eval_dataset, mode='valid').eval()
-    Evaluator(pargs, agent, eval_output_dir, test_eval_dataset, mode='test').eval()
+
+    if pargs.env_name.startswith('maze2d'):
+        evaluator_cls = OsilEvaluatorPM
+    elif pargs.env_name.startswith('reacher'):
+        evaluator_cls = OsilEvaluatorReacher
+
+    evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
+    evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
 
 
 
