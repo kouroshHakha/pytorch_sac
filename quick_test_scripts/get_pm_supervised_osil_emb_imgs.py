@@ -76,7 +76,7 @@ def main(pargs):
                 )
             for ep in raw_data[task_id][var_id]
             ]
-            episodes_padded = collate_fn_for_supervised_osil(episodes, max_padding=pargs.max_padding)
+            episodes_padded = collate_fn_for_supervised_osil(episodes, padding=pargs.max_padding)
             demo_states.append(episodes_padded['context_s'])
             demo_actions.append(episodes_padded['context_a'])
             demo_masks.append(episodes_padded['attention_mask'])
