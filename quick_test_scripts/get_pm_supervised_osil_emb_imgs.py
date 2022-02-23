@@ -39,6 +39,7 @@ def _parse_args():
     parser.add_argument('--model', type=str, default='osil', choices=['osil', 'semi-osil'])
     parser.add_argument('--dataset_path', default='./maze2d-open-v0_osil_short_trajs_v2', type=str)
     parser.add_argument('--ckpt_yaml', type=str)
+    parser.add_argument('--max_padding', default=128, type=int)
 
     return parser.parse_args()
 
@@ -75,7 +76,7 @@ def main(pargs):
                 )
             for ep in raw_data[task_id][var_id]
             ]
-            episodes_padded = collate_fn_for_supervised_osil(episodes)
+            episodes_padded = collate_fn_for_supervised_osil(episodes, max_padding=pargs.max_padding)
             demo_states.append(episodes_padded['context_s'])
             demo_actions.append(episodes_padded['context_a'])
             demo_masks.append(episodes_padded['attention_mask'])
