@@ -27,6 +27,7 @@ def _parse_args():
     parser.add_argument('--model', type=str, choices=['osil', 'semi-osil'])
     parser.add_argument('--dataset_path', default='./maze2d-open-v0_osil_short_trajs_v2', type=str)
     parser.add_argument('--max_padding', default=128, type=int)
+    parser.add_argument('--random', action='store_true')
 
     return parser.parse_args()
 
@@ -37,10 +38,14 @@ def main(pargs):
     data_path = Path(pargs.dataset_path)
     output_dir = Path(pargs.ckpt).parent
 
+    conf = None
+    if pargs.random:
+        conf = torch.load(pargs.ckpt)['hyper_parameters']
+
     if pargs.model == 'osil':
-        agent = TOsilv1.load_from_checkpoint(pargs.ckpt)
+        agent = TOsilv1(conf) if conf else TOsilv1.load_from_checkpoint(pargs.ckpt)
     elif pargs.model == 'semi-osil':
-        agent = TOsilSemisupervised.load_from_checkpoint(pargs.ckpt)
+        agent = TOsilSemisupervised(conf) if conf else TOsilSemisupervised.load_from_checkpoint(pargs.ckpt)
     else:
         raise ValueError(f'Unknown model {pargs.model}')
 
@@ -107,12 +112,16 @@ def main(pargs):
     label_color_map = dict(train='blue', valid='orange', test='green')
     label_colors = [label_color_map[l] for l in labels]
 
+    fname_suf = ''
+    if pargs.random:
+        fname_suf = 'random'
+
     print('Running TSNE ...')
     demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
     s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
     h,l = s_plt.legend_elements()
     plt.legend(handles = h, labels=labels)
-    plt.savefig(output_dir / 'tsne_demo_embs.png')
+    plt.savefig(output_dir / f'tsne_demo_embs_{fname_suf}.png' if fname_suf else 'tsne_demo_embs.png')
 
     plt.close()
 
@@ -122,7 +131,7 @@ def main(pargs):
     s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
     h,l = s_plt.legend_elements()
     plt.legend(handles = h, labels=labels)
-    plt.savefig(output_dir / 'pca_demo_embs.png')
+    plt.savefig(output_dir / f'pca_demo_embs_{fname_suf}.png' if fname_suf else 'pca_demo_embs.png')
 
 
     # print('Running KNN for k = [1, 3, 5, 10, 25, 50, 100]')
@@ -176,6 +185,7 @@ def main(pargs):
     print('Computing trajectory retrieval score ...')
     # last k should be 99 since except the index itself there are 99 others
     k_list = [1, 3, 5, 10, 25, 50, 100, 200]
+    # k_list = [200]
 
     tr_score_list = []
     for k in tqdm.tqdm(k_list):
@@ -195,7 +205,7 @@ def main(pargs):
         print(f'{k:2d}, {tr_score:10.3f}')
 
     results = dict(k_list=k_list, tr_scores=tr_score_list)
-    write_yaml(output_dir / 'tr_results.yaml', results)
+    # write_yaml(output_dir / f'tr_results_{fname_suf}.yaml' if fname_suf else 'tr_results.yaml', results)
 
 if __name__ == '__main__':
     main(_parse_args())
