@@ -119,7 +119,7 @@ class EmbBCDataset(Dataset):
                 else:
                     norm_embs = np.sqrt((embs**2).sum(-1))
                     norm_emb = np.sqrt((emb**2).sum(-1))
-                    dist = (embs @ embs[idx].T) / norm_embs / norm_emb
+                    dist = 1 - (embs @ embs[idx].T) / norm_embs / norm_emb
                 dist[idx] = float('inf')
                 cand_inds = np.argsort(dist)[:k_neighbor]
 

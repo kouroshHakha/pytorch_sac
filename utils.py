@@ -1,3 +1,5 @@
+from typing import List
+
 import random
 import re
 import time
@@ -17,9 +19,22 @@ import h5py
 import numpy as np
 from numbers import Number
 
+from PIL import Image
+
 
 PathLike = Union[str, Path]
 yaml = YAML(typ='safe')
+
+def save_as_gif(imgs: List[np.ndarray], name: str) -> None:
+    imgs_list = [Image.fromarray(img.astype(np.uint8)) for img in imgs]
+    # duration is the number of milliseconds between frames; this is 40 frames per second
+    imgs_list[0].save(
+        name,
+        save_all=True,
+        append_images=imgs_list[1:],
+        duration=100,
+        loop=0,
+    )
 
 def read_yaml(fname: Union[str, Path]) -> Any:
     """Read the given file using YAML.

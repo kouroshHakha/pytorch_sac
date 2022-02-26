@@ -27,6 +27,7 @@ def _parse_args():
     parser.add_argument('--model', type=str, choices=['osil', 'semi-osil'])
     parser.add_argument('--dataset_path', default='./maze2d-open-v0_osil_short_trajs_v2', type=str)
     parser.add_argument('--max_padding', default=128, type=int)
+    parser.add_argument('--metric', default='euclidean', type=str)
     parser.add_argument('--random', action='store_true')
 
     return parser.parse_args()
@@ -116,22 +117,22 @@ def main(pargs):
     if pargs.random:
         fname_suf = 'random'
 
-    print('Running TSNE ...')
-    demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
-    s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
-    h,l = s_plt.legend_elements()
-    plt.legend(handles = h, labels=labels)
-    plt.savefig(output_dir / f'tsne_demo_embs_{fname_suf}.png' if fname_suf else 'tsne_demo_embs.png')
+    # print('Running TSNE ...')
+    # demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
+    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
+    # h,l = s_plt.legend_elements()
+    # plt.legend(handles = h, labels=labels)
+    # plt.savefig(output_dir / f'tsne_demo_embs_{fname_suf}.png' if fname_suf else 'tsne_demo_embs.png')
 
-    plt.close()
+    # plt.close()
 
-    print('Running PCA ...')
+    # print('Running PCA ...')
 
-    demo_2d = PCA(n_components=2).fit_transform(demo_embs)
-    s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
-    h,l = s_plt.legend_elements()
-    plt.legend(handles = h, labels=labels)
-    plt.savefig(output_dir / f'pca_demo_embs_{fname_suf}.png' if fname_suf else 'pca_demo_embs.png')
+    # demo_2d = PCA(n_components=2).fit_transform(demo_embs)
+    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
+    # h,l = s_plt.legend_elements()
+    # plt.legend(handles = h, labels=labels)
+    # plt.savefig(output_dir / f'pca_demo_embs_{fname_suf}.png' if fname_suf else 'pca_demo_embs.png')
 
 
     # print('Running KNN for k = [1, 3, 5, 10, 25, 50, 100]')
@@ -191,7 +192,12 @@ def main(pargs):
     for k in tqdm.tqdm(k_list):
         query_acc_list = []
         for idx in range(len(demo_embs)):
-            dist = np.sqrt(((demo_embs - demo_embs[idx]) ** 2).sum(-1))
+            if pargs.metric == 'euclidean':
+                dist = np.sqrt(((demo_embs - demo_embs[idx]) ** 2).sum(-1))
+            else:
+                norm_embs = np.sqrt((demo_embs**2).sum(-1))
+                norm_emb = np.sqrt((demo_embs[idx]**2).sum(-1))
+                dist = 1 - (demo_embs @ demo_embs[idx].T) / norm_embs / norm_emb
             dist[idx] = float('inf')
             cand_inds = np.argsort(dist)[:k]
             retrieved_classes = classes[cand_inds]
@@ -205,7 +211,11 @@ def main(pargs):
         print(f'{k:2d}, {tr_score:10.3f}')
 
     results = dict(k_list=k_list, tr_scores=tr_score_list)
-    # write_yaml(output_dir / f'tr_results_{fname_suf}.yaml' if fname_suf else 'tr_results.yaml', results)
+
+    if pargs.metric == 'euclidean':
+        write_yaml(output_dir / f'tr_results_{fname_suf}.yaml' if fname_suf else 'tr_results.yaml', results)
+    else:
+        write_yaml(output_dir / f'tr_results_cosine_{fname_suf}.yaml' if fname_suf else 'tr_results_cosine.yaml', results)
 
 if __name__ == '__main__':
     main(_parse_args())

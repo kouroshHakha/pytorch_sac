@@ -5,8 +5,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from pathlib import Path
+
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import Subset
+import torch.nn as nn
 
 from utils import write_pickle, write_yaml
 
@@ -18,7 +20,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 
 from osil.nets import GCBCv2
 from osil.utils import ParamDict
-from osil.eval import EvaluatorPointMazeBase, EvaluatorReacherSawyer
+from osil.eval import EvaluatorPickPlaceSawyer, EvaluatorPointMazeBase, EvaluatorReacherSawyer
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
@@ -89,6 +91,8 @@ class GCBCDataset(Dataset):
                 elif env_name == 'reacher_7dof-v1':
                     # the 3d eef at the last state
                     target = np.tile(ep['state'][-1][-3:], (len(ep['state']), 1))
+                elif env_name == 'robosuite_pick_place':
+                    target = np.tile(ep['state'][-1][-12:], (len(ep['state']), 1))
 
                 # target = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[task_to_class_map[(task_id, var_id)]]])
                 # target = np.tile(target.toarray(), (len(ep['state']), 1))
@@ -111,7 +115,6 @@ class GCBCDataset(Dataset):
             g = torch.tile(g, (nrepeats, ))
 
         return x, g, y
-
 
 def get_action(state, goal, agent):
     device = agent.device
@@ -145,6 +148,35 @@ class EvaluatorReacher(EvaluatorReacherSawyer):
 
     def _get_action(self, state, goal):
         return get_action(state, goal, self.agent)
+
+class EvaluatorPickPlace(EvaluatorPickPlaceSawyer):
+
+    def _get_goal(self, demo_state, demo_action, target_state, target_action):
+        # g = demo_state[-1, -12:]
+        g = target_state[-1, -12:]
+        if self.conf.gd != -1:
+            nrepeats = self.conf.gd // g.shape[-1]
+            g = np.tile(g, (nrepeats, ))
+
+        return g
+
+    def _get_action(self, state, goal):
+        return get_action(state, goal, self.agent)
+
+###### Customized Model
+class PickPlaceModel(GCBCv2):
+
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+        
+        # continuous part of actions
+        loss = nn.MSELoss()(pred_ac[:, :3], target_ac[:, :3])
+        loss += nn.MSELoss()(pred_ac[:, -1:], target_ac[:, -1:])
+        # # gripper open / close
+        # loss += nn.BCEWithLogitsLoss()(pred_ac[:, -1:], (target_ac[:, -1:] > 0).float())
+        
+        return loss
 
 
 def _parse_args():
@@ -235,7 +267,10 @@ def main(pargs):
     ckpt = args_var.get('ckpt', '')
     resume = args_var.get('resume', False)
     
-    agent = GCBCv2.load_from_checkpoint(ckpt) if ckpt else GCBCv2(config)
+    if pargs.env_name.startswith('robosuite'):
+        agent = PickPlaceModel.load_from_checkpoint(ckpt) if ckpt else PickPlaceModel(config)
+    else:
+        agent = GCBCv2.load_from_checkpoint(ckpt) if ckpt else GCBCv2(config)
     agent = agent.to(device=pargs.device)
 
     train = (ckpt and resume) or not ckpt
@@ -287,8 +322,12 @@ def main(pargs):
         evaluator_cls = EvaluatorPM
     elif pargs.env_name.startswith('reacher'):
         evaluator_cls = EvaluatorReacher
-    evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
-    evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
+    elif pargs.env_name.startswith('robosuite'):
+        evaluator_cls = EvaluatorPickPlace
+    
+    train_dataset  = GCBCDataset(data_path=data_path, mode='train', nshots_per_task=100, env_name=pargs.env_name)
+    evaluator_cls(pargs, agent, eval_output_dir, train_dataset, mode='train').eval()
+    # evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
 
 if __name__ == '__main__':
     main(_parse_args())

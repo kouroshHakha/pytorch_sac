@@ -208,9 +208,6 @@ class GCBCv2(BaseLightningModule):
     def ff(self, batch, compute_loss=True):
         x, goal, y = batch
         pred_ac = self(x, goal)
-        # TODO: testing sth for reacher env
-        pred_ac = pred_ac.tanh() # between -1, 1
-
         ret = dict(pred_ac=pred_ac)
         if compute_loss:
             loss = self.bc_loss(pred_ac, y)
@@ -222,6 +219,8 @@ class GCBCv2(BaseLightningModule):
         assert g.shape[-1] == self.conf.goal_dim, 'goal shape is not correct.'
         mlp_in = torch.cat([x,g], -1)
         pred_ac = self.mlp(mlp_in)
+        # TODO: limiting actions to -1, 1
+        pred_ac = pred_ac.tanh()
         return pred_ac
 
 

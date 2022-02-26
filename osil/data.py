@@ -220,11 +220,15 @@ SPLITS = {
     'maze2d-open-v0': {
         'valid': [3], 
         'test': [6, 7],
-    }
+    },
+    "robosuite_pick_place": {
+        "valid": [5, 8],
+        "test": [1, 13],
+    },
 }
 SPLITS['reacher_7dof-v1']['train'] = [i for i in np.arange(64) if i not in SPLITS['reacher_7dof-v1']['valid'] + SPLITS['reacher_7dof-v1']['test']]
 SPLITS['maze2d-open-v0']['train'] = [i for i in np.arange(15) if i not in SPLITS['maze2d-open-v0']['valid'] + SPLITS['maze2d-open-v0']['test']]
-
+SPLITS['robosuite_pick_place']['train'] = [i for i in np.arange(16) if i not in SPLITS['robosuite_pick_place']['valid'] + SPLITS['robosuite_pick_place']['test']]
 
 class OsilPairedDataset(Dataset):
 

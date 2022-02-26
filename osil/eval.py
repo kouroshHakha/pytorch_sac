@@ -18,12 +18,16 @@ from video import VideoRecorder
 
 from osil.data import collate_fn_for_supervised_osil
 
-from utils import write_yaml, write_pickle
+from utils import save_as_gif, write_yaml, write_pickle
 import envs
 import d4rl; import gym
 import yaml
 import time
 import imageio
+
+# robo suite
+from robosuite_env.osil_utils.env_utils import create_env, env_obs_to_vector
+from robosuite_env.custom_obs_setting import PICK_PLACE_OBSERVATION_KEYS
 
 class Evaluator:
 
@@ -750,6 +754,179 @@ class EvaluatorReacherSawyerDT(EvaluatorReacherSawyer):
         print('Plotting done.')
 
 
+class EvaluatorPickPlaceSawyer(EvaluatorBase):
+
+    @classmethod
+    def get_test_cases(cls, test_dataset):
+        print('Preparing test cases from test dataset ...')
+        test_task_ids = test_dataset.allowed_ids
+
+        # (states, actions, rst_state)
+        test_cases = []
+        for task_id, var_id in test_task_ids:
+            # TODO: grab the first 100
+            episodes = test_dataset.raw_data[task_id][var_id][:100]
+
+            for ep_id, ep in enumerate(episodes):
+                # random design choice: use the next episode to obtain reset
+                rst_idx = (ep_id + 1) % len(episodes)
+                test_dict = dict(
+                    context_s=ep['state'],
+                    context_a=ep['action'],
+                    context_init_raw_state=None if "init_raw_state" not in ep else ep["init_raw_state"],
+                    target_s=episodes[rst_idx]['state'],
+                    target_a=episodes[rst_idx]['action'],
+                    target_init_raw_state=None if "init_raw_state" not in episodes[rst_idx] else episodes[rst_idx]["init_raw_state"],
+                    rst=episodes[rst_idx]['state'][0],
+                    task_id=task_id,
+                )
+                test_cases.append(test_dict)
+        print('Preparation done.')
+        return test_cases
+
+    def render(self, env):
+        raise NotImplementedError
+        return env.unwrapped.sim.render(256, 256, mode="offscreen")[::-1]
+
+    def eval(self):
+        successes, episode_lens = [], []
+        print(f"Running evaluation on {len(self.test_cases)} {self.mode} cases ...")
+
+        # TODO
+        max_render = 2
+        max_eval = 2
+        policy_imgs = []
+        demo_imgs = []
+        expert_imgs = []
+        env_map = {}
+
+        shuffled_inds = np.random.permutation(len(self.test_cases))
+        for test_counter, test_idx in tqdm.tqdm(enumerate(shuffled_inds)):
+            if test_counter >= max_eval:
+                break
+            test_case = self.test_cases[test_idx]
+
+            demo_state = test_case["context_s"]
+            demo_action = test_case["context_a"]
+            demo_rst_state = test_case["context_init_raw_state"]
+            target_rst_state = test_case["target_init_raw_state"]
+            target_state = test_case["target_s"]
+            target_action = test_case["target_a"]
+            task_id = test_case["task_id"]
+
+            if task_id in env_map:
+                env = env_map[task_id]
+            else:
+                env = create_env(task_id, render=False, camera_obs=test_counter < max_render)
+                env_map[task_id] = env
+
+            # render demo policy
+            # if test_counter < max_render:
+            # #     env.reset()
+            # #     env.sim.reset()
+            # #     env.sim.set_state_from_flattened(demo_rst_state) # show demonstration
+            # #     env.sim.forward()
+            # #     for a in demo_action:
+            # #         # obs, reward, done, info = env.step(unstandardize_action(a))
+            # #         obs, reward, done, info = env.step(a)
+            # #         demo_imgs.append(obs["image"])
+
+            #     env.reset()
+            #     env.sim.reset()
+            #     env.sim.set_state_from_flattened(target_rst_state) # show policy
+            #     env.sim.forward()
+            #     for a in target_action:
+            #         obs, reward, done, info = env.step(a)
+            #         expert_imgs.append(obs["image"])
+
+
+            # set the reset
+            env.reset()
+            env.sim.reset()
+            env.sim.set_state_from_flattened(target_rst_state) # reset to target inital state
+            env.sim.forward()
+            s = target_state[0]
+
+            # set the target
+            goal = self._get_goal(demo_state, demo_action, target_state, target_action)
+            done = False
+            step = 0
+
+            success = False
+            # max_steps = 200
+            max_steps = 100
+
+            # for idx in range(max_steps):  # since the ep_len is always n it makes sense to do this
+            for idx in range(len(target_state)):  # since the ep_len is always n it makes sense to do this
+                # step through the policy
+                a = self._get_action(s, goal)
+                # a = self._get_action(target_state[idx], goal)
+                print('-'*30)
+                print('action delta: ', np.linalg.norm(a[:3] - target_action[idx, :3]))
+                # a = env.action_space.sample()
+                # action = unstandardize_action(a)
+                # HACK (kourosh): fix the rotation of the eef and binarize gripper action based on its sign
+                action = a
+                action[3:6] = [0.546875, -0.296875,  0.]
+                action[-1] = 1 if (action[-1] > 0) and (idx < max_steps - 20) else -1 
+                # obs, reward, done, info = env.step(action)
+                obs, reward, done, info = env.step(target_action[idx])
+                if test_counter < max_render:
+                    policy_imgs.append(obs["image"])
+                s = env_obs_to_vector(obs, PICK_PLACE_OBSERVATION_KEYS)
+
+                if idx < len(target_state) - 1:
+                    print('state delta: ', np.linalg.norm(s - target_state[idx+1]))
+                # foo = [len(obs[k]) for k in PICK_PLACE_OBSERVATION_KEYS]
+                # breakpoint()
+
+                print(reward)
+                if done:
+                    breakpoint()
+                    break
+                step += 1
+
+            # if test_counter < max_render:
+            #     diff = step - len(demo_action)
+            #     last_image_gray = np.stack((np.mean(demo_imgs[-1], -1),) * 3, axis=-1).astype(int)
+            #     for d in range(diff):
+            #         demo_imgs.append(last_image_gray)
+
+            #     diff = step - len(target_action)
+            #     last_image_gray = np.stack((np.mean(expert_imgs[-1], -1),) * 3, axis=-1).astype(int)
+            #     for d in range(diff):
+            #         expert_imgs.append(last_image_gray)
+
+            episode_lens.append(idx)
+            successes.append(done)
+
+        policy_imgs = np.stack(policy_imgs, 0)
+        # demo_imgs   = np.stack(demo_imgs, 0)
+        # expert_imgs = np.stack(expert_imgs, 0)
+        # assert demo_imgs.shape == policy_imgs.shape
+
+        summary = dict(
+            success_rate=float(np.mean(successes)), total_dist=-float(np.mean(episode_lens))
+        )
+
+        summary_yaml = self.output_dir / f"summary_{self.mode}.yaml"
+        write_yaml(summary_yaml, summary)
+
+        images_dict = dict(demo=demo_imgs, policy=policy_imgs, expert=expert_imgs)
+        write_pickle(
+            self.output_dir / f"example_trajs_{self.mode}.pkl",
+            images_dict,
+        )
+        for key, imgs in images_dict.items():
+            save_path = os.path.join(self.output_dir,f"vis_{key}_{self.mode}.gif")
+            if len(imgs) > 0:
+                save_as_gif(imgs, save_path)
+
+        print(
+            f"success rate: {float(np.mean(successes))}, total_dist: {-float(np.mean(episode_lens))}"
+        )
+        print(f"Saved to :{self.output_dir}")
+
 class TOsilEvaluator(EvaluatorBase):
 
     def _get_goal(self, demo_state, demo_action):
@@ -776,3 +953,5 @@ class TOsilEvaluator(EvaluatorBase):
 
 class OsilEvaluatorPM(EvaluatorPointMazeBase, TOsilEvaluator): pass
 class OsilEvaluatorReacher(EvaluatorReacherSawyer, TOsilEvaluator): pass
+
+
