@@ -214,8 +214,8 @@ class EvaluatorBase:
         self.conf = conf
         self.agent = agent
         self.output_dir = Path(output_dir)
-        self.test_cases = self.get_test_cases(test_dset)
         self.mode = mode
+        self.test_cases = self.get_test_cases(test_dset)
 
 
     @classmethod
@@ -821,23 +821,23 @@ class EvaluatorPickPlaceSawyer(EvaluatorBase):
                 env_map[task_id] = env
 
             # render demo policy
-            # if test_counter < max_render:
-            # #     env.reset()
-            # #     env.sim.reset()
-            # #     env.sim.set_state_from_flattened(demo_rst_state) # show demonstration
-            # #     env.sim.forward()
-            # #     for a in demo_action:
-            # #         # obs, reward, done, info = env.step(unstandardize_action(a))
-            # #         obs, reward, done, info = env.step(a)
-            # #         demo_imgs.append(obs["image"])
-
+            if test_counter < max_render:
             #     env.reset()
             #     env.sim.reset()
-            #     env.sim.set_state_from_flattened(target_rst_state) # show policy
+            #     env.sim.set_state_from_flattened(demo_rst_state) # show demonstration
             #     env.sim.forward()
-            #     for a in target_action:
+            #     for a in demo_action:
+            #         # obs, reward, done, info = env.step(unstandardize_action(a))
             #         obs, reward, done, info = env.step(a)
-            #         expert_imgs.append(obs["image"])
+            #         demo_imgs.append(obs["image"])
+
+                env.reset()
+                env.sim.reset()
+                env.sim.set_state_from_flattened(target_rst_state) # show policy
+                env.sim.forward()
+                for a in target_action:
+                    obs, reward, done, info = env.step(a)
+                    expert_imgs.append(obs["image"])
 
 
             # set the reset
@@ -854,35 +854,35 @@ class EvaluatorPickPlaceSawyer(EvaluatorBase):
 
             success = False
             # max_steps = 200
-            max_steps = 100
+            max_steps = 100 # len(target_state)
 
             # for idx in range(max_steps):  # since the ep_len is always n it makes sense to do this
-            for idx in range(len(target_state)):  # since the ep_len is always n it makes sense to do this
+            for idx in range(max_steps):  # since the ep_len is always n it makes sense to do this
                 # step through the policy
                 a = self._get_action(s, goal)
                 # a = self._get_action(target_state[idx], goal)
-                print('-'*30)
-                print('action delta: ', np.linalg.norm(a[:3] - target_action[idx, :3]))
+                # print('-'*30)
+                # print('action delta: ', np.linalg.norm(a[:3] - target_action[idx, :3]))
                 # a = env.action_space.sample()
                 # action = unstandardize_action(a)
                 # HACK (kourosh): fix the rotation of the eef and binarize gripper action based on its sign
                 action = a
                 action[3:6] = [0.546875, -0.296875,  0.]
                 action[-1] = 1 if (action[-1] > 0) and (idx < max_steps - 20) else -1 
-                # obs, reward, done, info = env.step(action)
-                obs, reward, done, info = env.step(target_action[idx])
+                obs, reward, done, info = env.step(action)
+                # obs, reward, done, info = env.step(target_action[idx])
                 if test_counter < max_render:
                     policy_imgs.append(obs["image"])
                 s = env_obs_to_vector(obs, PICK_PLACE_OBSERVATION_KEYS)
+                print(f'[{idx}], state: {s[-12:]}')
 
-                if idx < len(target_state) - 1:
-                    print('state delta: ', np.linalg.norm(s - target_state[idx+1]))
+                # if idx < len(target_state) - 1:
+                #     print('state delta: ', np.linalg.norm(s - target_state[idx+1]))
                 # foo = [len(obs[k]) for k in PICK_PLACE_OBSERVATION_KEYS]
                 # breakpoint()
 
-                print(reward)
-                if done:
-                    breakpoint()
+                success = reward > 0
+                if success:
                     break
                 step += 1
 
@@ -898,7 +898,7 @@ class EvaluatorPickPlaceSawyer(EvaluatorBase):
             #         expert_imgs.append(last_image_gray)
 
             episode_lens.append(idx)
-            successes.append(done)
+            successes.append(success)
 
         policy_imgs = np.stack(policy_imgs, 0)
         # demo_imgs   = np.stack(demo_imgs, 0)

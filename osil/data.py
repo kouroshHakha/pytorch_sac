@@ -225,6 +225,11 @@ SPLITS = {
         "valid": [5, 8],
         "test": [1, 13],
     },
+    "robosuite_task0": {
+        "train": [0],
+        "valid": [],
+        "test": [],
+    },
 }
 SPLITS['reacher_7dof-v1']['train'] = [i for i in np.arange(64) if i not in SPLITS['reacher_7dof-v1']['valid'] + SPLITS['reacher_7dof-v1']['test']]
 SPLITS['maze2d-open-v0']['train'] = [i for i in np.arange(15) if i not in SPLITS['maze2d-open-v0']['valid'] + SPLITS['maze2d-open-v0']['test']]
