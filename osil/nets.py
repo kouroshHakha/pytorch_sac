@@ -1126,16 +1126,16 @@ class TOsilv1(BaseLightningModule):
             task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
             ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
 
-        if True and compute_loss:
+        if self.conf.use_contrastive and compute_loss:
             contrastive_loss_fn = ContrastiveLossELI5(context_s.shape[0])
-            pair_embed = self.get_task_emb(batch["target_s"], batch["target_a"], context_mask)
+            pair_embed = self.get_task_emb(batch["target_s_padded"], batch["target_a_padded"], batch["target_mask_padded"])
             contrastive_loss = contrastive_loss_fn(task_emb, pair_embed)
-            ret['loss'] += contrastive_loss
+            ret['loss'] = contrastive_loss * 0.1
         return ret
 
 
 class ContrastiveLossELI5(nn.Module):
-    def __init__(self, batch_size, temperature=0.5, verbose=True):
+    def __init__(self, batch_size, temperature=0.5, verbose=False):
         super().__init__()
         self.batch_size = batch_size
         self.register_buffer("temperature", torch.tensor(temperature))
@@ -1159,7 +1159,7 @@ class ContrastiveLossELI5(nn.Module):
             if self.verbose: print(f"sim({i}, {j})={sim_i_j}")
 
             numerator = torch.exp(sim_i_j / self.temperature)
-            one_for_not_i = torch.ones((2 * self.batch_size, )).to(emb_i.device).scatter_(0, torch.tensor([i]), 0.0)
+            one_for_not_i = torch.ones((2 * self.batch_size, )).to(emb_i.device).scatter_(0, torch.tensor([i]).to(emb_i.device), 0.0)
             if self.verbose: print(f"1{{k!={i}}}",one_for_not_i)
 
             denominator = torch.sum(
