@@ -14,7 +14,7 @@ class BaseLightningModule(pl.LightningModule):
         super().__init__()
 
         self._init_conf(conf)
-        self._build_network()                
+        self._build_network()
 
     def _init_conf(self, conf):
         self.save_hyperparameters(conf)
@@ -25,7 +25,7 @@ class BaseLightningModule(pl.LightningModule):
         raise NotImplementedError
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0), 
+        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0),
                                 betas=(0.99, 0.999))
 
     def ff(self, batch, compute_loss=True):
@@ -59,28 +59,28 @@ class Encoder(nn.Module):
 
         # self.convnet = nn.Sequential(
         #     nn.Conv2d(obs_shape[0], 32, 3, stride=2),
-        #     nn.ReLU(), 
+        #     nn.ReLU(),
         #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(), 
+        #     nn.ReLU(),
         #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(), 
+        #     nn.ReLU(),
         #     nn.Conv2d(32, 1, 3, stride=1),
         #     nn.ReLU()
         # )
 
         self.convnet = nn.Sequential(
             nn.Conv2d(obs_shape[0], 32, 8, stride=4),
-            nn.ReLU(), 
+            nn.ReLU(),
             nn.Conv2d(32, 32, 4, stride=2),
-            nn.ReLU(), 
+            nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=1),
-            nn.ReLU(), 
+            nn.ReLU(),
             nn.Conv2d(32, 32, 3, stride=1),
             nn.ReLU(),
             nn.Conv2d(32, h_dim, 5, stride=1),
             nn.ReLU()
         )
-        
+
         # self.lin = nn.Linear(self.repr_dim, h_dim, bias=True)
 
         self.apply(utils.weight_init)
@@ -94,7 +94,7 @@ class Encoder(nn.Module):
 
 
 class BC(pl.LightningModule):
-    
+
     def __init__(self, conf):
         super().__init__()
 
@@ -104,12 +104,12 @@ class BC(pl.LightningModule):
         self.h_dim = conf.hidden_dim
         self.obs_shape = conf.obs_shape
         self.ac_dim = conf.ac_dim
-        
+
         self.emb = None
 
-        self._build_network()                
+        self._build_network()
         self.apply(utils.weight_init)
-        
+
     def forward(self, x):
         if self.emb:
             x = self.emb(x)
@@ -133,17 +133,17 @@ class BC(pl.LightningModule):
             nn.ReLU(),
             nn.Linear(h_dim, ac_dim)
         )
-    
+
     def bc_loss(self, pred_ac, target_ac):
-     
+
         pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
         target_ac = target_ac.view(-1, target_ac.shape[-1])
         loss = F.mse_loss(pred_ac, target_ac)
-        
+
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0), 
+        return torch.optim.AdamW(self.parameters(), lr=self.conf.lr, weight_decay=self.conf.get('wd', 0),
                                 betas=(0.99, 0.999))
 
     def ff(self, batch):
@@ -179,7 +179,7 @@ class GCBCv2(BaseLightningModule):
     def __init__(self, conf):
         super().__init__(conf)
 
-    
+
     def _build_network(self):
         obs_dim = self.conf.obs_dim
         h_dim = self.conf.hidden_dim
@@ -197,12 +197,12 @@ class GCBCv2(BaseLightningModule):
             nn.ReLU(),
             nn.Linear(h_dim, ac_dim)
         )
-    
+
     def bc_loss(self, pred_ac, target_ac):
         pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
         target_ac = target_ac.view(-1, target_ac.shape[-1])
         loss = F.mse_loss(pred_ac, target_ac)
-        
+
         return loss
 
     def ff(self, batch, compute_loss=True):
@@ -229,7 +229,7 @@ class GCBC(BC):
     def __init__(self, conf):
         super().__init__(conf)
 
-    
+
     def _build_network(self):
         obs_shape = self.obs_shape
         h_dim = self.h_dim
@@ -249,7 +249,7 @@ class GCBC(BC):
             nn.ReLU(),
             nn.Linear(h_dim, ac_dim)
         )
-    
+
     def ff(self, batch):
         # obs, goal, act = batch
         # obs = obs.squeeze(1)
@@ -280,7 +280,7 @@ class GCBC(BC):
         return pred_ac
 
     def get_goal(self, state_ctx, action_ctx, start_target=0):
-        
+
         goal_type = self.conf.goal_type
         if goal_type.startswith('last+start_qpos_qvel'):
             goal = torch.cat([state_ctx[start_target], state_ctx[-1]], -1)[None]
@@ -296,7 +296,7 @@ class GCBC(BC):
         return goal
 
     def imitate(self, env, batch_item):
-        
+
         device = self.device
         obs, ac = batch_item
         # TODO: for now I have hard-coded the decode context length
@@ -307,7 +307,7 @@ class GCBC(BC):
 
         # random policy
         rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
-        
+
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
         # # goal is the xy of the last obs
@@ -368,8 +368,8 @@ def get_rand_trajectories(env, rst_obs, niter, steps_per_episode):
             s, _, _, _  = env.step(a)
             traj['states'].append(s)
             traj['actions'].append(a)
-        rand_trajs.append(traj)      
-    return rand_trajs         
+        rand_trajs.append(traj)
+    return rand_trajs
 
 
 class GCDT(nn.Module):
@@ -395,8 +395,8 @@ class GCDT(nn.Module):
         # decode state and action embs to next states and actions
         self.decode_next_state = None
         self.decode_next_action = None
-        
-        self._build_network()                
+
+        self._build_network()
 
     def _build_network(self):
         """ builds emb_state, emb_action, emb_timestep, transformer networks
@@ -501,7 +501,7 @@ class GCDT(nn.Module):
         return pred_ac[:, -1]
 
     def imitate(self, env, batch_item):
-        
+
         device = self.transformer.device
         obs, ac = batch_item
         # TODO: for now I have hard-coded the decode context length
@@ -512,7 +512,7 @@ class GCDT(nn.Module):
 
         # random policy
         rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
-        
+
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
         # goal is the xy of the last obs
@@ -700,11 +700,11 @@ class GCTrajGPT(nn.Module):
         self.output_ac_nn = nn.Linear(h_dim, ac_dim)
 
     def bc_loss(self, pred_ac, target_ac):
-     
+
         pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
         target_ac = target_ac.view(-1, target_ac.shape[-1])
         loss = F.mse_loss(pred_ac, target_ac)
-        
+
         return loss
 
     def forward(self, states, actions, attn_masks, goals):
@@ -738,7 +738,7 @@ class GCTrajGPT(nn.Module):
 
     def ff(self, states, actions, attn_mask, goals, compute_loss=True):
         state_emb, action_emb = self.get_state_action_embs(states, actions, attn_mask, goals)
-        
+
         pred_ac = self.output_ac_nn(state_emb)
 
         ret = dict(pred_ac=pred_ac)
@@ -754,7 +754,7 @@ class GCTrajGPT(nn.Module):
         # goal: [d_g]
         # return action: [d_a]
 
-        # add a dummy action, make a ff pass 
+        # add a dummy action, make a ff pass
         # and just use the last state emb (which won't see the dummy anyways)
 
         T, _ = cur_past_states.size()
@@ -764,7 +764,7 @@ class GCTrajGPT(nn.Module):
         else:
             assert past_actions.shape[0] == T - 1
             actions = torch.cat([past_actions, torch.ones(1, self.ac_dim).to(past_actions)], 0)
-        
+
         states = cur_past_states[None]
         actions = actions[None]
         goals = goal[None]
@@ -847,7 +847,7 @@ class TraphormerLightningModule(pl.LightningModule):
         return task_emb
 
     def imitate(self, env, batch_item):
-        
+
         device = self.device
         obs, ac = batch_item
         steps = self.decoder.decode_size
@@ -857,11 +857,11 @@ class TraphormerLightningModule(pl.LightningModule):
 
         # random policy
         rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
-        
+
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
 
-        # TODO: What should goal embedding be during inference? 
+        # TODO: What should goal embedding be during inference?
         # should goal be encoding of c_s, and c_a or obs, ac? with or without mask?
         goal = self.get_goal(obs[None].to(device), ac[None].to(device), mask=True, augment=True)
 
@@ -990,7 +990,7 @@ class TraphormerBCLightningModule(pl.LightningModule):
         return task_emb
 
     def imitate(self, env, batch_item):
-        
+
         device = self.device
         obs, ac = batch_item
         steps = 64
@@ -1000,13 +1000,13 @@ class TraphormerBCLightningModule(pl.LightningModule):
 
         # random policy
         rand_trajs = get_rand_trajectories(env, rst_obs, niter=10, steps_per_episode=steps)
-        
+
         state_ctx = torch.as_tensor(obs[:steps], dtype=torch.float, device=device)[None]
         action_ctx = torch.as_tensor(ac[:steps], dtype=torch.float, device=device)[None]
 
         output = dict(rand_trajs=rand_trajs)
         for mask in [False, True]:
-            # TODO: What should goal embedding be during inference? 
+            # TODO: What should goal embedding be during inference?
             # should goal be encoding of c_s, and c_a or obs, ac? with or without mask?
             goal = self.get_goal(obs[None].to(device), ac[None].to(device), mask=mask, augment=True)
 
@@ -1110,6 +1110,8 @@ class TOsilv1(BaseLightningModule):
         # shape B,
         task_emb = self.get_task_emb(context_s, context_a, context_mask)
 
+
+
         if self.use_gpt_decoder:
             # shape B, T
             target_s    = batch['target_s']
@@ -1123,7 +1125,58 @@ class TOsilv1(BaseLightningModule):
 
             task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
             ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+
+        if True and compute_loss:
+            contrastive_loss_fn = ContrastiveLossELI5(context_s.shape[0])
+            pair_embed = self.get_task_emb(batch["target_s"], batch["target_a"], context_mask)
+            contrastive_loss = contrastive_loss_fn(task_emb, pair_embed)
+            ret['loss'] += contrastive_loss
         return ret
+
+
+class ContrastiveLossELI5(nn.Module):
+    def __init__(self, batch_size, temperature=0.5, verbose=True):
+        super().__init__()
+        self.batch_size = batch_size
+        self.register_buffer("temperature", torch.tensor(temperature))
+        self.verbose = verbose
+
+    def forward(self, emb_i, emb_j):
+        """
+        emb_i and emb_j are batches of embeddings, where corresponding indices are pairs
+        z_i, z_j as per SimCLR paper
+        """
+        z_i = F.normalize(emb_i, dim=1)
+        z_j = F.normalize(emb_j, dim=1)
+
+        representations = torch.cat([z_i, z_j], dim=0)
+        similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
+        if self.verbose: print("Similarity matrix\n", similarity_matrix, "\n")
+
+        def l_ij(i, j):
+            z_i_, z_j_ = representations[i], representations[j]
+            sim_i_j = similarity_matrix[i, j]
+            if self.verbose: print(f"sim({i}, {j})={sim_i_j}")
+
+            numerator = torch.exp(sim_i_j / self.temperature)
+            one_for_not_i = torch.ones((2 * self.batch_size, )).to(emb_i.device).scatter_(0, torch.tensor([i]), 0.0)
+            if self.verbose: print(f"1{{k!={i}}}",one_for_not_i)
+
+            denominator = torch.sum(
+                one_for_not_i * torch.exp(similarity_matrix[i, :] / self.temperature)
+            )
+            if self.verbose: print("Denominator", denominator)
+
+            loss_ij = -torch.log(numerator / denominator)
+            if self.verbose: print(f"loss({i},{j})={loss_ij}\n")
+
+            return loss_ij.squeeze(0)
+
+        N = self.batch_size
+        loss = 0.0
+        for k in range(0, N):
+            loss += l_ij(k, k + N) + l_ij(k + N, k)
+        return 1.0 / (2*N) * loss
 
 
 class TOsilSemisupervised(TOsilv1):
@@ -1174,7 +1227,7 @@ class TOsilSemisupervised(TOsilv1):
 
         masked_states, masked_actions, masked_state_inds, masked_action_inds = self._mask_input(states, actions, attn_mask)
         encoder_output = self.encoder(masked_states, masked_actions, attn_mask)
-        
+
         # the first token is cls then it's a state and then it's an action
         state_embs = encoder_output.last_hidden_state[:, 1::2]
         action_embs = encoder_output.last_hidden_state[:, 2::2]
@@ -1184,14 +1237,14 @@ class TOsilSemisupervised(TOsilv1):
         predicted_actions = self.action_output_proj(action_embs[masked_action_inds.bool()])
 
         ret = dict(encoder_output=encoder_output)
-        if compute_loss:        
+        if compute_loss:
             target_states = states[masked_state_inds.bool()]
             target_actions = actions[masked_action_inds.bool()]
 
             # compute individual action and state prediction errors and sum them up
             loss_actions = self.mse(target_actions, predicted_actions)
             loss_states = self.mse(target_states, predicted_states)
-            loss = loss_actions + loss_states  
+            loss = loss_actions + loss_states
 
             ret.update(
                 loss=loss,
@@ -1228,10 +1281,10 @@ class TOsilSemisupervised(TOsilv1):
         if 'paired' in batch:
             decoder_output = self.ff_decoder(batch['paired'], compute_loss=compute_loss)
             decoder_loss = decoder_output['loss']
-        
+
         # compute the total training loss
         loss = (1 - self.decoder_loss_weight) * encoder_loss + self.decoder_loss_weight * decoder_loss
-        
+
         return dict(loss=loss, encoder_loss=encoder_loss.detach(), decoder_loss=decoder_loss.detach())
 
     def training_step(self, batch, batch_idx):
@@ -1258,7 +1311,7 @@ class TOsilSemisupervised(TOsilv1):
         valid_dec_losses = torch.stack([item['decoder_loss'] for item in outputs], 0)
         # this should be compared to training loss to monitor overfitting
         self.log('valid_loss_epoch', valid_losses.mean(), prog_bar=True)
-        # to keep things consistent with other models valid_loss should 
+        # to keep things consistent with other models valid_loss should
         # measure the decoding capability
         self.log('valid_loss', valid_dec_losses.mean())
         self.log('valid_enc_loss_epoch', valid_enc_losses.mean())
