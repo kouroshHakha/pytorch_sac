@@ -1,10 +1,12 @@
-
+from typing import Dict, Any
 import matplotlib.pyplot as plt
 import os
 import tqdm 
 from time import sleep
 import numpy as np
 from pathlib import Path
+
+from osil.utils import ParamDict
 
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 os.environ['MUJOCO_GL'] = 'egl'
@@ -24,6 +26,9 @@ import d4rl; import gym
 import yaml
 import time
 import imageio
+from PIL import Image
+
+import pytorch_lightning as pl
 
 # robo suite
 from robosuite_env.osil_utils.env_utils import create_env, env_obs_to_vector
@@ -250,7 +255,7 @@ class EvaluatorBase:
     def _get_action(self, state, goal):
         raise NotImplementedError
 
-    def eval(self):
+    def eval(self) -> Dict[str, Any]:
         raise NotImplementedError
 
 class EvaluatorPointMazeBase(EvaluatorBase):
@@ -954,4 +959,209 @@ class TOsilEvaluator(EvaluatorBase):
 class OsilEvaluatorPM(EvaluatorPointMazeBase, TOsilEvaluator): pass
 class OsilEvaluatorReacher(EvaluatorReacherSawyer, TOsilEvaluator): pass
 
+
+class EvaluatorReacher2D_GCBC:
+
+    def __init__(self, conf, dset, output_dir='', mode='train'):
+        self.conf = conf
+        self.output_dir = output_dir
+        self.dataset = dset
+        self.mode = mode
+        self.test_cases = self._get_test_cases(dset)
+
+    def _render(self, env):
+        img = env.render('rgb_array')
+        pil_image = Image.fromarray(img)
+        pil_image = pil_image.resize((128, 128), Image.ANTIALIAS)
+        img = np.flipud(np.array(pil_image))
+        return img
+
+    def _get_test_cases(self, test_dataset):
+        print('Preparing test cases from test dataset ...')
+        test_task_ids = test_dataset.allowed_ids
+        
+        # (states, actions, rst_state)
+        test_cases = []
+        for task_id, var_id in test_task_ids:
+            episodes = test_dataset.raw_data[task_id][var_id]
+            
+            for ep_id, ep in enumerate(episodes):
+                # random design choice: use the next episode to obtain reset
+                rst_idx = (ep_id + 1) % len(episodes)
+                test_dict = dict(
+                    context_s=ep['state'],
+                    context_a=ep['action'],
+                    target_s=episodes[rst_idx]['state'],
+                    target_a=episodes[rst_idx]['action'],
+                    rst=episodes[rst_idx]['state'][0],
+                    goal=ep['target'],
+                    target_task_id = (var_id, episodes[rst_idx]['cond_id'].item()),
+                    context_task_id = (var_id, ep['cond_id'].item())
+                )
+                test_cases.append(test_dict)
+        print('Preparation done.')
+        return test_cases
+    
+    def eval(self, agent):
+        successes, rewards = [], []
+        max_render = self.conf.get('max_render', 0)
+        max_eval_episodes = self.conf.get('max_eval_episodes', len(self.test_cases))
+        seed = self.conf.get('seed', 0)
+        verbose = self.conf.get('verbose', False)
+
+        if verbose:
+            print(f'Running evaluation on {len(self.test_cases)} {self.mode} cases ...')
+
+        if not self.output_dir:
+            # don't save anything 
+            max_render = -1
+
+        policy_imgs = []
+        demo_imgs = []
+        expert_imgs = []
+
+        np.random.seed(seed)
+        shuffled_inds = np.random.permutation(len(self.test_cases))
+        env = gym.make(self.conf.env_name)
+
+        test_iter = enumerate(shuffled_inds[:max_eval_episodes])
+        test_iter = tqdm.tqdm(test_iter) if verbose else test_iter
+        for test_counter, test_idx in test_iter:
+            test_case = self.test_cases[test_idx]
+            
+            demo_state      = test_case['context_s']
+            demo_action     = test_case['context_a']
+            demo_target     = test_case['goal']
+            demo_task_id, demo_cond_id = test_case['context_task_id']
+            
+            new_rst_state   = test_case['rst']
+            target_task_id, target_cond_id = test_case['target_task_id']
+
+            target_state    = test_case['target_s']
+            target_action   = test_case['target_a']
+
+            
+            # render demo policy
+            if test_counter < max_render:
+                env.set_task(demo_task_id, demo_cond_id)
+                env.reset()
+                env.set_state(demo_state[0, :2], demo_state[0, 2:4])
+                for a in demo_action:
+                    demo_imgs.append(self._render(env))
+                    env.step(a)
+
+                env.set_task(target_task_id, target_cond_id)
+                env.reset()
+                env.set_state(new_rst_state[:2], new_rst_state[2:4])
+                for a in target_action:
+                    expert_imgs.append(self._render(env))
+                    env.step(a)
+
+
+            # set the reset
+            env.set_task(target_task_id, target_cond_id)
+            env.reset()
+            s = env.set_state(new_rst_state[:2], new_rst_state[2:4])
+            
+            # set the target
+            goal = self._get_goal(agent, test_case)
+            step = 0
+
+            success = False
+            total_reward = 0
+            policy_a, policy_s = [], []
+            for _ in demo_action: # since the ep_len is always n it makes sense to do this
+                # step through the policy
+                a = self._get_action(agent, s, goal)
+                if test_counter < max_render:
+                    policy_imgs.append(self._render(env))
+                ns, reward, _, _ = env.step(a)
+
+                # log
+                policy_a.append(a)
+                policy_s.append(s)
+
+                s = ns
+                total_reward += reward
+                
+                if bool(reward):
+                    success = True
+                step += 1
+
+            rewards.append(total_reward)
+            successes.append(success)
+
+        summary = dict(
+            success_rate=float(np.mean(successes)),
+            total_reward=float(np.mean(rewards))
+        )
+        images_dict = dict(demo=demo_imgs, policy=policy_imgs, expert=expert_imgs)
+        
+        if self.output_dir:
+            write_yaml(Path(self.output_dir) / f'summary_{self.mode}.yaml', summary)
+            write_pickle(
+                Path(self.output_dir) / f"example_trajs_{self.mode}.pkl",
+                images_dict,
+            )
+            for key, imgs in images_dict.items():
+                save_path = Path(self.output_dir) / f"vis_{key}_{self.mode}.gif"
+                if len(imgs) > 0:
+                    save_as_gif(imgs, save_path)
+
+            print(f'success rate: {float(np.mean(successes))}, total_reward: {float(np.mean(rewards))}')
+            print(f"Saved to :{self.output_dir}")
+        
+        return summary
+        
+
+    def _get_goal(self, agent, test_case):
+        g = test_case['goal']
+        # g = test_case['target_s'][-1, 4:6]
+        return g
+
+    def _get_action(self, agent, state, goal):
+        agent.eval()
+        device = agent.device
+        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
+        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+        pred_ac = agent(state_tens, goal_tens)
+        a = pred_ac.squeeze(0).detach().cpu().numpy()
+        return a
+
+
+
+class EvaluationCallback(pl.Callback):
+
+    def __init__(self, evaluator, eval_every_n_updates, dirpath) -> None:
+        super().__init__()
+        self.evaluator = evaluator
+        self.eval_every_n_updates = eval_every_n_updates
+        self.last_step = 0
+        self.best = {'step': None, 'score': -float('inf')}
+        self.dirpath = dirpath
+        self.best_model_path = None
+
+    def on_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        cur_step = trainer.global_step
+        logger = trainer.logger
+
+        if self.dirpath is None and logger:
+            self.dirpath = Path(logger.save_dir) / 'osil' / logger.experiment.id / 'checkpoints'
+
+        pl_module.eval()
+        if cur_step - self.last_step > self.eval_every_n_updates or cur_step == 0:
+            summary = self.evaluator.eval(pl_module)
+
+            if summary['total_reward'] > self.best['score']:
+                self.best.update(step=cur_step, score=summary['total_reward'])
+                self.best_model_path = filepath = Path(self.dirpath) / f'best_reward_{self.evaluator.mode}.ckpt'
+                trainer.save_checkpoint(filepath, weights_only=False)
+                write_yaml(Path(self.dirpath) / f'best_summary_{self.evaluator.mode}.yaml', summary)
+
+            summary = {f'{k}_{self.evaluator.mode}': v for k, v in summary.items()}
+
+            if logger:
+                pl_module.log_dict(summary)
+            self.last_step = cur_step
+        pl_module.train()
 

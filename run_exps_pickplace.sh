@@ -2,6 +2,10 @@
 # goal conditioned bc
 CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 200000 --dataset_path robosuite_pick_place_osil_data/ --env_name robosuite_pick_place --num_shots 100 -wb --run_name ns_100
 CUDA_VISIBLE_DEVICES=2  python quick_test_scripts/train_gcbcv2.py -bs 256 --lr 1e-3 -hd 1024 --max_steps 200000 --dataset_path robosuite_pick_place_osil_data_v3/ --env_name robosuite_pick_place --num_shots 100 -wb --run_name ns_100
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 256 --lr 1e-3 -hd 1024 --max_steps 200000 --dataset_path robosuite_pick_place_osil_data_v3_no_noise --env_name robosuite_pick_place --num_shots 100 -wb --run_name ns_100_no_noise
+CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 256 --lr 1e-3 -hd 1024 --max_steps 200000 --dataset_path robosuite_pick_place_osil_data_v4_no_noise --env_name robosuite_pick_place --num_shots 100 -wb --run_name ns_100_no_noise_dsetV4
+# single task
+CUDA_VISIBLE_DEVICES=1  python quick_test_scripts/train_gcbcv2_robosuite_task0.py -bs 1024 --lr 1e-3 -hd 256 --max_steps 200000 --dataset_path robosuite_pick_place_osil_data_task0 --env_name robosuite_task0 --num_shots -1 -wb --run_name task0
 # CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path robosuite_pick_place_osil_data/ --env_name robosuite_pick_place --num_shots  50 -wb --run_name ns_50
 # CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path robosuite_pick_place_osil_data/ --env_name robosuite_pick_place --num_shots  25 -wb --run_name ns_25
 # CUDA_VISIBLE_DEVICES=0  python quick_test_scripts/train_gcbcv2.py -bs 128 --max_steps 10000 --dataset_path robosuite_pick_place_osil_data/ --env_name robosuite_pick_place --num_shots  10 -wb --run_name ns_10

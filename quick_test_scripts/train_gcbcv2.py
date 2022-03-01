@@ -92,6 +92,7 @@ class GCBCDataset(Dataset):
                     # the 3d eef at the last state
                     target = np.tile(ep['state'][-1][-3:], (len(ep['state']), 1))
                 elif env_name == 'robosuite_pick_place':
+                    # target = np.tile(ep['state'][-1][-12:] - ep['state'][0][-12:], (len(ep['state']), 1))
                     target = np.tile(ep['state'][-1][-12:], (len(ep['state']), 1))
 
                 # target = OneHotEncoder(categories=[np.arange(15)]).fit_transform([[task_to_class_map[(task_id, var_id)]]])
@@ -153,6 +154,7 @@ class EvaluatorPickPlace(EvaluatorPickPlaceSawyer):
 
     def _get_goal(self, demo_state, demo_action, target_state, target_action):
         # g = demo_state[-1, -12:]
+        # g = target_state[-1, -12:] - target_state[0, -12:]
         g = target_state[-1, -12:]
         if self.conf.gd != -1:
             nrepeats = self.conf.gd // g.shape[-1]
@@ -327,7 +329,8 @@ def main(pargs):
     
     train_dataset  = GCBCDataset(data_path=data_path, mode='train', nshots_per_task=100, env_name=pargs.env_name)
     evaluator_cls(pargs, agent, eval_output_dir, train_dataset, mode='train').eval()
-    # evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
+    evaluator_cls(pargs, agent, eval_output_dir, test_dataset, mode='test').eval()
+    evaluator_cls(pargs, agent, eval_output_dir, valid_dataset, mode='valid').eval()
 
 if __name__ == '__main__':
     main(_parse_args())
