@@ -1,5 +1,5 @@
 from typing import Optional
-from numpy import dtype
+from numpy import dtype, inner
 
 import torch
 import torch.nn as nn
@@ -7,7 +7,38 @@ from torch.nn import functional as F
 
 import pytorch_lightning as pl
 
+import dataclasses
+
 import osil.utils as utils
+
+
+
+class MLP(nn.Module):
+
+    def __init__(self, in_channel, out_channel, hidden_dim, n_layers, activation=nn.ReLU(), bnorm=False) -> None:
+        super().__init__()
+
+        self.in_channel = in_channel
+        self.out_channel = out_channel
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.activation = activation
+
+        self.net = []
+
+        dims = [in_channel] + [hidden_dim] * n_layers + [out_channel]
+        net = []
+        for h1, h2 in zip(dims[:-1], dims[1:]):
+            net.append(nn.Linear(h1, h2))
+            if bnorm:
+                net.append(nn.BatchNorm1d(h2))
+            net.append(activation)
+        net.pop()
+
+        self.net = nn.Sequential(*net)
+    
+    def forward(self, x):
+        return self.net(x)
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, conf):
@@ -1123,6 +1154,246 @@ class TOsilv1(BaseLightningModule):
 
             task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
             ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+        return ret
+
+
+
+@dataclasses.dataclass
+class CUBE:
+    ind: int
+    pos: slice
+    color: slice
+
+@dataclasses.dataclass
+class EEF:
+    pos: slice
+
+def get_goal_color(state):
+    # accepts batched input
+    # inds of state that correspond to each cube
+    CUBES = [
+        CUBE(0, slice(8, 10), slice(10, 13)),
+        CUBE(1, slice(13, 15), slice(15, 18)),
+        CUBE(2, slice(18, 20), slice(20, 23)),
+    ]
+    eef = EEF(slice(4, 6))
+
+    cube_colors = torch.stack([state[:, cube.color] for cube in CUBES], 1)
+    cube_poses = torch.stack([state[:, cube.pos] for cube in CUBES], 1)
+    eef_pos = state[:, eef.pos][:, None, :]
+    
+    dists = ((cube_poses - eef_pos)**2).sum(-1)
+    target_cube_ind = dists.argmin(-1)
+    target_color = cube_colors[torch.arange(eef_pos.shape[0]), target_cube_ind]
+    info = {
+        'eef_pos': eef_pos,
+        'cube_poses': cube_poses,
+        'cube_colors': cube_colors,
+        'dists': dists,
+        'argmin': target_cube_ind,
+        'color': target_color,
+    }
+    return target_color, info
+
+class ContrastiveLossELI5(nn.Module):
+    def __init__(self, batch_size, temperature=0.5, verbose=False):
+        super().__init__()
+        self.batch_size = batch_size
+        self.register_buffer("temperature", torch.tensor(temperature))
+        self.verbose = verbose
+
+    def forward(self, emb_i, emb_j):
+        """
+        emb_i and emb_j are batches of embeddings, where corresponding indices are pairs
+        z_i, z_j as per SimCLR paper
+        """
+        z_i = F.normalize(emb_i, dim=1)
+        z_j = F.normalize(emb_j, dim=1)
+
+        # z_i = emb_i
+        # z_j = emb_j
+
+        representations = torch.cat([z_i, z_j], dim=0)
+        similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
+        if self.verbose: print("Similarity matrix\n", similarity_matrix, "\n")
+
+        def l_ij(i, j):
+            z_i_, z_j_ = representations[i], representations[j]
+            sim_i_j = similarity_matrix[i, j]
+            if self.verbose: print(f"sim({i}, {j})={sim_i_j}")
+
+            numerator = torch.exp(sim_i_j / self.temperature)
+            one_for_not_i = torch.ones((2 * self.batch_size, )).to(emb_i.device).scatter_(0, torch.tensor([i]).to(emb_i.device), 0.0)
+            if self.verbose: print(f"1{{k!={i}}}",one_for_not_i)
+
+            denominator = torch.sum(
+                one_for_not_i * torch.exp(similarity_matrix[i, :] / self.temperature)
+            )
+            if self.verbose: print("Denominator", denominator)
+
+            loss_ij = -torch.log(numerator / denominator)
+            if self.verbose: print(f"loss({i},{j})={loss_ij}\n")
+
+            return loss_ij.squeeze(0)
+
+        N = self.batch_size
+        loss = 0.0
+        for k in range(0, N):
+            loss += l_ij(k, k + N) + l_ij(k + N, k)
+        return 1.0 / (2*N) * loss
+
+
+        
+class TOsilv1DebugReacher(BaseLightningModule):
+
+    def _build_network(self):
+        # enc_config = utils.ParamDict(
+        #     hidden_dim=self.conf.hidden_dim,
+        #     obs_shape=(self.conf.obs_dim, ),
+        #     ac_dim=self.conf.ac_dim,
+        #     max_ep_len=self.conf.max_ep_len,
+        # )
+        # self.encoder = TrajBERT(enc_config)
+        # self.goal_dim = self.conf.goal_dim
+        # self.goal_emb = nn.Linear(self.conf.hidden_dim, self.goal_dim)
+
+        obs_dim = self.conf.obs_dim
+        h_dim = self.conf.hidden_dim
+        goal_dim = self.conf.goal_dim
+        self.encoder = nn.Sequential(
+            nn.Linear(obs_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, goal_dim)
+        )
+
+        self.use_gpt_decoder = self.conf.get('use_gpt_decoder', False)
+        if self.use_gpt_decoder:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_shape=(self.conf.obs_dim, ),
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+                max_ep_len=self.conf.max_ep_len,
+            )
+            self.decoder = GCTrajGPT(dec_config)
+        else:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_dim=self.conf.obs_dim,
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+            )
+
+            self.decoder = GCBCv2(dec_config)
+
+        self.grid2spher_proj = MLP(3, goal_dim, 128, 3, nn.Tanh())
+
+
+    def get_task_emb(self, context_s, context_a, context_mask):
+        # enc_output = self.encoder(context_s, context_a, context_mask)
+        # hstate = enc_output.last_hidden_state[:, 0]
+        # task_emb = self.goal_emb(hstate)
+        # B = context_s.shape[0]
+        # inds = context_mask.sum(-1) - 1
+        last_states = context_s[:, -1]
+        task_emb = self.encoder(last_states)
+        return task_emb
+
+    def ff(self, batch, compute_loss=True):
+        context_s       = batch['context_s']
+        context_a       = batch['context_a']
+        context_mask    = batch['attention_mask']
+
+        B = context_s.shape[0]
+
+        #### TODO: remove
+        if 'context_class_id' in batch:
+            class_acc = (batch['context_class_id'] == batch['target_class_id']).float().mean()
+            self.log('class_acc', class_acc, prog_bar=True)
+
+        # shape B,
+        # task_emb = self.get_task_emb(context_s, context_a, context_mask)
+        task_goal_color, _ = get_goal_color(context_s[:, -1])
+
+        color_vector = self.grid2spher_proj(task_goal_color.detach())
+        color_vector = F.normalize(color_vector, -1)
+
+        loss_proj = ContrastiveLossELI5(B)(color_vector, color_vector)
+
+        # (B, 1, D) x (B, D, 1) = (B, 1, 1)
+        # inner_prod = torch.bmm(color_vector.unsqueeze(1), task_emb.unsqueeze(-1))
+        # loss_fit = -inner_prod.mean()
+
+
+        # try to fit the goal color directly / contrastively
+        # target_s_enc    = batch['target_s_enc']
+        # target_a_enc    = batch['target_a_enc']
+        # target_mask_enc = batch['target_mask_enc']
+        # target_emb = self.get_task_emb(target_s_enc, target_a_enc, target_mask_enc)
+
+        # target_goal_color, _ = get_goal_color(target_s_enc[:, -1])
+        # similar_flag = torch.all(task_goal_color.repeat(B, 1, 1).transpose(0, 1) == target_goal_color.repeat(B, 1, 1), -1)
+
+        # task_emb_norm = task_emb / (task_emb**2).sum(-1, keepdim=True)**0.5
+        # target_emb_norm = target_emb / (target_emb**2).sum(-1, keepdim=True)**0.5
+        # # task_emb_norm = task_emb 
+        # # target_emb_norm = target_emb
+        # # target_emb_norm = target_emb_norm.detach() # detach to stabilize training
+        # logits = task_emb_norm @ target_emb_norm.T
+        # logits = (logits - logits.mean(-1, keepdim=True)) / logits.std(-1, keepdim=True)
+        # # contrastive_logits = contrastive_logits - contrastive_logits.max(-1, keepdim=True)[0] # subtract the mean
+        # # contrastive_logits = contrastive_logits - contrastive_logits.mean(-1, keepdim=True) # subtract the mean
+        
+        # loss_colors = nn.BCEWithLogitsLoss()(logits, similar_flag.float())
+        # target_emb = target_emb.detach()
+        # cosine similarity
+        # task_emb_norm   = F.normalize(task_emb, dim=-1)
+        # target_emb_norm = F.normalize(target_emb, dim=-1)
+        # l1 = task_emb_norm @ target_emb_norm.T
+        # l2 = target_emb_norm @ task_emb_norm.T
+        # l1 -= l1.mean(-1, keepdim=True)
+        # l2 -= l2.mean(-1, keepdim=True)
+        # euclidean similarity
+        # contrastive_dist = task_emb.repeat(B, 1, 1).transpose(0, 1) - target_emb.repeat(B, 1, 1).detach()
+        # contrastive_logits = -(contrastive_dist**2).sum(-1)**0.5
+        # contrastive_logits = contrastive_logits - contrastive_logits.max(-1, keepdim=True)[0]
+        # divide by a temprature norm for sharpening
+        # contrastive_logits /= 0.1
+
+        # labels = torch.arange(B).to(task_emb).long()
+        # loss_colors = nn.CrossEntropyLoss()(contrastive_logits, labels)
+        # loss_colors = 0.5 * (nn.CrossEntropyLoss()(l1, labels) + nn.CrossEntropyLoss()(l2, labels))
+        # goal_colors, _ = get_goal_color(context_s[:, -1])
+        # loss_colors = nn.MSELoss()(goal_colors, task_emb)
+        # loss_colors = ContrastiveLossELI5(B)(task_emb, )
+        # loss_colors = ContrastiveLossELI5(B)(task_emb, task_emb)
+
+        # if self.use_gpt_decoder:
+        #     # shape B, T
+        #     target_s    = batch['target_s']
+        #     target_a    = batch['target_a']
+        #     target_mask = batch['target_mask']
+        #     ret = self.decoder.ff(target_s, target_a, target_mask, task_emb, compute_loss=compute_loss)
+        # else:
+        #     target_s    = batch['target_s']
+        #     target_a    = batch['target_a']
+        #     ptr         = batch['ptr']
+
+        #     task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
+        #     ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+        
+        ret = {}
+        # ret['loss_bc'] = ret['loss'].clone()
+        # ret['loss_colors'] = loss_colors
+        # ret['loss'] += loss_colors
+        # ret['loss'] = loss_colors
+        ret['loss'] = loss_proj
         return ret
 
 

@@ -1130,18 +1130,49 @@ class EvaluatorReacher2D_GCBC:
 
 
 
+class TOsilEvaluatorV2(EvaluatorReacher2D_GCBC):
+
+    def _get_goal(self, agent, test_cases):
+        demo_state = test_cases['context_s']
+        demo_action = test_cases['context_a']
+
+        device = agent.device
+        batch = dict(
+            context_s=torch.as_tensor(demo_state).float().to(device),
+            context_a=torch.as_tensor(demo_action).float().to(device),
+        )
+        batch = collate_fn_for_supervised_osil([batch], padding=self.conf.max_padding, pad_targets=self.conf.use_gpt_decoder)
+        with torch.no_grad():
+            goal = agent.get_task_emb(batch['context_s'], batch['context_a'], batch['attention_mask'])
+            goal = goal.squeeze(0)
+
+        return goal.detach().cpu().numpy()
+
+    def _get_action(self, agent, state, goal):
+        device = agent.device
+        state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
+        goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
+
+        pred_ac = agent.decoder(state_tens, goal_tens)
+        a = pred_ac.squeeze(0).detach().cpu().numpy()
+        return a
+
+class EvaluatorReacher2D_TOSIL(TOsilEvaluatorV2, EvaluatorReacher2D_GCBC): pass
+
 class EvaluationCallback(pl.Callback):
 
-    def __init__(self, evaluator, eval_every_n_updates, dirpath) -> None:
+    def __init__(self, evaluator, eval_every_n_updates, dirpath, start_evaluating_after=-1) -> None:
         super().__init__()
         self.evaluator = evaluator
         self.eval_every_n_updates = eval_every_n_updates
+        self.start_evaluating_after = start_evaluating_after
         self.last_step = 0
         self.best = {'step': None, 'score': -float('inf')}
         self.dirpath = dirpath
         self.best_model_path = None
 
-    def on_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+    # def on_batch_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+    def on_batch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         cur_step = trainer.global_step
         logger = trainer.logger
 
@@ -1149,7 +1180,7 @@ class EvaluationCallback(pl.Callback):
             self.dirpath = Path(logger.save_dir) / 'osil' / logger.experiment.id / 'checkpoints'
 
         pl_module.eval()
-        if cur_step - self.last_step > self.eval_every_n_updates or cur_step == 0:
+        if (cur_step - self.last_step > self.eval_every_n_updates or cur_step == 0) and cur_step > self.start_evaluating_after:
             summary = self.evaluator.eval(pl_module)
 
             if summary['total_reward'] > self.best['score']:
