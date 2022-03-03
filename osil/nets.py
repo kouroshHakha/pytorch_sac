@@ -1,3 +1,4 @@
+from base64 import encode
 from typing import Optional
 from numpy import dtype, inner
 
@@ -287,6 +288,8 @@ class GCBCv3(BaseLightningModule):
         h_dim = self.conf.hidden_dim
         ac_dim = self.conf.ac_dim
 
+        self.enc_obs = None
+        self.enc_goal = None
         self.enc = None
         if self.is_obs_image:
             obs_shape = self.conf.obs_shape
@@ -298,11 +301,16 @@ class GCBCv3(BaseLightningModule):
             if self.is_goal_image:
                 assert obs_shape[-1] == goal_shape[-1], 'Observation and goal images should be of the same W'
                 assert obs_shape[-2] == goal_shape[-2], 'Observation and goal images should be of the same H'
-                enc_in_shape = (obs_shape[0] + goal_shape[0], ) + tuple(obs_shape[1:])
+                # enc_in_shape = (obs_shape[0] + goal_shape[0], ) + tuple(obs_shape[1:])
+                enc_in_shape = (obs_shape[0] ,) + tuple(obs_shape[1:])
                 self.enc = encoder_cls(enc_in_shape, h_dim)
-                mlp_channel_in = 2 * h_dim
+                # self.enc_obs = encoder_cls(obs_shape, h_dim)
+                # self.enc_goal = encoder_cls(goal_shape, h_dim)
+                # mlp_channel_in = h_dim 
+                mlp_channel_in = h_dim*2
             else:
-                self.enc = encoder_cls(obs_shape, h_dim)
+                self.enc_obs = encoder_cls(obs_shape, h_dim)
+                # self.enc = encoder_cls(obs_shape, h_dim)
                 mlp_channel_in = h_dim + self.conf.goal_shape[-1]
         else:
             mlp_channel_in = self.conf.obs_shape[-1] + self.conf.goal_shape[-1]
@@ -330,12 +338,14 @@ class GCBCv3(BaseLightningModule):
         self._check_obs_and_goal(obs, goal)
 
         if self.is_obs_image and self.is_goal_image:
-            enc_in = torch.cat([obs, goal], dim=1) # cat dim = C
-            mlp_in = self.enc(enc_in)
+            # enc_in = torch.cat([obs, goal], dim=1) # cat dim = C
+            # mlp_in = self.enc(enc_in)
+            # mlp_in = torch.cat([self.enc_obs(obs), self.enc_goal(goal)], -1)
+            mlp_in = torch.cat([self.enc(obs), self.enc(goal)], -1)
         else:
             assert not(self.is_goal_image and not self.is_obs_image) # cannot have goal img but obs state
             
-            x = self.enc(obs) if self.is_obs_image else obs
+            x = self.enc_obs(obs) if self.is_obs_image else obs
             # g = self.enc(goal) if self.is_goal_image else goal
             mlp_in = torch.cat([x, goal], -1)
 

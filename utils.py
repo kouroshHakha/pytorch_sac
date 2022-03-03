@@ -51,6 +51,15 @@ def save_as_gif(imgs: List[np.ndarray], name: str) -> None:
         loop=0,
     )
 
+
+def stack_frames(frames, num_stacks=1):
+    padding_shape = (num_stacks-1,) + frames.shape[1:]
+    frames = torch.cat([torch.zeros(padding_shape, device=frames.device), frames], 0)
+    # N, C, H, W or N, H, W, C
+    separated_frames = [list(frames[i-num_stacks+1:i+1]) for i in range(num_stacks-1, len(frames))]
+    multi_channel_frames = [torch.cat(stack_of_frames, 0) for stack_of_frames in separated_frames]
+    return torch.stack(multi_channel_frames, 0)
+
 def read_yaml(fname: Union[str, Path]) -> Any:
     """Read the given file using YAML.
     Parameters

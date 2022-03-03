@@ -10,7 +10,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import Subset
 import torch.nn as nn
 
-from utils import write_pickle, write_yaml, gif_to_tensor_image
+from utils import stack_frames, write_pickle, write_yaml, gif_to_tensor_image
 
 print(f'Workspace: {Path.cwd()}')
 
@@ -54,6 +54,7 @@ def _parse_args():
                             (-1 means max number of shots available in the dataset)')
     parser.add_argument('--task_size', default=-1, type=int)
     parser.add_argument('--image', action='store_true')
+    parser.add_argument('--stack_frames', default=1, type=int)
 
     parser.add_argument('--gd', '-gd', default=-1, type=int)
     # checkpoint resuming and testing
@@ -81,8 +82,11 @@ def main(pargs):
     train_path = 'reacher_2d_train_v2'
     test_path = 'reacher_2d_test_v2'
 
-    train_dataset = Reacher2DGCBCDataset(data_path=train_path, nshots_per_task=pargs.num_shots, task_size=pargs.task_size, image_based=pargs.image)
-    test_dataset = Reacher2DGCBCDataset(data_path=test_path, image_based=pargs.image)
+    train_dataset = Reacher2DGCBCDataset(data_path=train_path, nshots_per_task=pargs.num_shots, 
+                                        task_size=pargs.task_size, image_based=pargs.image, 
+                                        n_stack_frames=pargs.stack_frames)
+    test_dataset = Reacher2DGCBCDataset(data_path=test_path, image_based=pargs.image,  
+                                        n_stack_frames=pargs.stack_frames)
 
     print('training set size:', len(train_dataset))
     print('test set size:',     len(test_dataset))
@@ -91,6 +95,8 @@ def main(pargs):
     vloader = DataLoader(test_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=num_workers, pin_memory=True)
     obs, goal, act = train_dataset[0]
     obs_imgs, goal_imgs, acts = next(iter(tloader))
+
+    breakpoint()
     
     # s = time.time()
     # for batch in tqdm.tqdm(tloader):
