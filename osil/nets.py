@@ -85,35 +85,21 @@ class Encoder(nn.Module):
         super().__init__()
 
         assert len(obs_shape) == 3
-        # self.repr_dim = 1 * 35 * 35
-        # self.repr_dim = h_dim
-
-        # self.convnet = nn.Sequential(
-        #     nn.Conv2d(obs_shape[0], 32, 3, stride=2),
-        #     nn.ReLU(), 
-        #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(), 
-        #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(), 
-        #     nn.Conv2d(32, 1, 3, stride=1),
-        #     nn.ReLU()
-        # )
+        assert obs_shape[1] == obs_shape[2] == 64
 
         self.convnet = nn.Sequential(
-            nn.Conv2d(obs_shape[0], 32, 8, stride=4),
+            nn.Conv2d(obs_shape[0], 32, 3, stride=2), # 31x31
             nn.ReLU(), 
-            nn.Conv2d(32, 32, 4, stride=2),
+            nn.Conv2d(32, 32, 3, stride=2), # 15x15
             nn.ReLU(), 
-            nn.Conv2d(32, 32, 3, stride=1),
-            nn.ReLU(), 
-            nn.Conv2d(32, 32, 3, stride=1),
+            nn.Conv2d(32, 32, 3, stride=2), # 7x7
             nn.ReLU(),
-            nn.Conv2d(32, h_dim, 5, stride=1),
-            nn.ReLU()
+            nn.Conv2d(32, 32, 3, stride=2), # 3x3
+            nn.ReLU(),
+            nn.Conv2d(32, h_dim, 3, stride=2), # 1x1
+            nn.ReLU(),
         )
         
-        # self.lin = nn.Linear(self.repr_dim, h_dim, bias=True)
-
         self.apply(utils.weight_init)
 
     def forward(self, obs):
@@ -122,6 +108,36 @@ class Encoder(nn.Module):
         h = h.view(h.shape[0], -1)
         return h
 
+class Encoder28(nn.Module):
+    def __init__(self, obs_shape, h_dim):
+        super().__init__()
+
+        assert len(obs_shape) == 3
+        assert obs_shape[1] == obs_shape[2] == 28
+
+        self.convnet = nn.Sequential(
+            nn.Conv2d(obs_shape[0], 32, 3, stride=1, padding=1), # 32x28x28
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 32x14x14
+            nn.Conv2d(32, 32, 3, stride=1, padding=1), # 32x14x14
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 32x7x7
+            nn.Conv2d(32, 64, 3, stride=1), # 64x4x4
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 64x2x2
+        )
+        
+        # x = torch.rand(obs_shape)[None]
+        # y = self.convnet(x).flatten()
+        # self.linear = nn.Linear(y.shape[0], h_dim)
+        self.apply(utils.weight_init)
+
+    def forward(self, obs):
+        obs = obs / 255.0 - 0.5
+        h = self.convnet(obs)
+        h = h.view(h.shape[0], -1)
+        # h = self.linear(h)
+        return h
 
 
 class BC(pl.LightningModule):
@@ -249,6 +265,80 @@ class GCBCv2(BaseLightningModule):
         assert x.shape[-1] == self.conf.obs_dim, 'state shape is not correct.'
         assert g.shape[-1] == self.conf.goal_dim, 'goal shape is not correct.'
         mlp_in = torch.cat([x,g], -1)
+        pred_ac = self.mlp(mlp_in)
+        # TODO: limiting actions to -1, 1
+        pred_ac = pred_ac.tanh()
+        return pred_ac
+
+
+class GCBCv3(BaseLightningModule):
+
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    def _check_obs_and_goal(self, obs, goal):
+        assert obs.shape[1:] == self.conf.obs_shape, 'observation shape is not correct.'
+        assert goal.shape[1:] == self.conf.goal_shape, 'goal shape is not correct.'
+
+    
+    def _build_network(self):
+        self.is_obs_image = len(self.conf.obs_shape) > 1
+        self.is_goal_image = len(self.conf.goal_shape) > 1
+        h_dim = self.conf.hidden_dim
+        ac_dim = self.conf.ac_dim
+
+        self.enc = None
+        if self.is_obs_image:
+            obs_shape = self.conf.obs_shape
+            goal_shape = self.conf.goal_shape
+
+            # trying out 28x28 input
+            encoder_cls = Encoder if obs_shape[-1] == 64 else Encoder28
+
+            if self.is_goal_image:
+                assert obs_shape[-1] == goal_shape[-1], 'Observation and goal images should be of the same W'
+                assert obs_shape[-2] == goal_shape[-2], 'Observation and goal images should be of the same H'
+                enc_in_shape = (obs_shape[0] + goal_shape[0], ) + tuple(obs_shape[1:])
+                self.enc = encoder_cls(enc_in_shape, h_dim)
+                mlp_channel_in = 2 * h_dim
+            else:
+                self.enc = encoder_cls(obs_shape, h_dim)
+                mlp_channel_in = h_dim + self.conf.goal_shape[-1]
+        else:
+            mlp_channel_in = self.conf.obs_shape[-1] + self.conf.goal_shape[-1]
+
+        self.mlp = MLP(mlp_channel_in, ac_dim, h_dim, n_layers=4, activation=nn.ReLU())
+    
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+        loss = F.mse_loss(pred_ac, target_ac)
+        
+        return loss
+
+    def ff(self, batch, compute_loss=True):
+        obs, goal, act = batch
+        pred_ac = self(obs, goal)
+        ret = dict(pred_ac=pred_ac)
+        if compute_loss:
+            loss = self.bc_loss(pred_ac, act)
+            ret['loss']=loss
+        return ret
+
+    def forward(self, obs, goal):
+
+        self._check_obs_and_goal(obs, goal)
+
+        if self.is_obs_image and self.is_goal_image:
+            enc_in = torch.cat([obs, goal], dim=1) # cat dim = C
+            mlp_in = self.enc(enc_in)
+        else:
+            assert not(self.is_goal_image and not self.is_obs_image) # cannot have goal img but obs state
+            
+            x = self.enc(obs) if self.is_obs_image else obs
+            # g = self.enc(goal) if self.is_goal_image else goal
+            mlp_in = torch.cat([x, goal], -1)
+
         pred_ac = self.mlp(mlp_in)
         # TODO: limiting actions to -1, 1
         pred_ac = pred_ac.tanh()
