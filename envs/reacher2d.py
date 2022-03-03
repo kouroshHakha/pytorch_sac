@@ -141,13 +141,6 @@ class ReacherMILEnv(mujoco_env.MujocoEnv, utils.EzPickle):
         self.consecutive_steps = 0
         return self._get_obs()
     
-    def get_current_image_obs(self):
-        image = self.viewer.get_image()
-        pil_image = Image.frombytes('RGB', (image[1], image[2]), image[0])
-        pil_image = pil_image.resize((128, 128), Image.ANTIALIAS)
-        image = np.flipud(np.array(pil_image))
-        return image
-
     def _get_obs(self):
         return np.concatenate([
             self.data.qpos.flat[:2],

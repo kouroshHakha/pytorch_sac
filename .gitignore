@@ -30,5 +30,6 @@ wandb
 maze2d-*_osil*
 reacher_7dof-v1_osil_dataset*
 robosuite_*_data
+reacher_2d_t*
 
 *.tar.gz
