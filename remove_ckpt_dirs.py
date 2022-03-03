@@ -2,7 +2,7 @@ from pathlib import Path
 import shutil
 
 dir_list = [
-    'wandb_logs/osil/39bwhoqc',
+    'wandb_logs/osil/p1purav8',
 ]
 
 for ckpt_dir in dir_list:

@@ -20,10 +20,25 @@ import numpy as np
 from numbers import Number
 
 from PIL import Image
+import imageio
 
+import matplotlib.pyplot as plt
 
 PathLike = Union[str, Path]
 yaml = YAML(typ='safe')
+
+def gif_to_tensor_image(gif_file):
+    gif_obj = imageio.read(gif_file, pilmode='RGB')
+
+    np_frames = []
+    for frame in gif_obj:
+        pil_image = Image.fromarray(frame)
+        pil_image = pil_image.resize((64, 64), Image.ANTIALIAS)
+        np_frames.append(np.array(pil_image))
+    
+    torch_frames = torch.from_numpy(np.stack(np_frames, 0))
+    return torch_frames
+
 
 def save_as_gif(imgs: List[np.ndarray], name: str) -> None:
     imgs_list = [Image.fromarray(img.astype(np.uint8)) for img in imgs]

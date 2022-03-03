@@ -1,6 +1,5 @@
 
-from gc import callbacks
-from multiprocessing.sharedctypes import Value
+import time
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,7 +10,7 @@ from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import Subset
 import torch.nn as nn
 
-from utils import write_pickle, write_yaml
+from utils import write_pickle, write_yaml, gif_to_tensor_image
 
 print(f'Workspace: {Path.cwd()}')
 
@@ -19,23 +18,21 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from osil.nets import GCBC, GCBCv2
+from osil.nets import GCBCv3, GCBCv2, get_goal_color
 from osil.utils import ParamDict
-from osil.eval import EvaluatorReacher2D_GCBC, EvaluationCallback
+from osil.eval import EvaluationCallback
+from osil.evaluators.reacher2d import EvaluatorReacher2D_GCBC_Img, EvaluatorReacher2D_GCBC_State
+
+from osil.datasets.reacher2d.gcbc import Reacher2DGCBCDataset
 
 from osil.debug import register_pdb_hook
 register_pdb_hook()
 
-from torch.utils.data import Dataset
 import torch
 import d4rl; import gym
 import envs
 
 import tqdm
-
-from osil_gen_data.data_collector import OsilDataCollector
-from osil.data import SPLITS
-
 
 def _parse_args():
 
@@ -56,6 +53,7 @@ def _parse_args():
                         help='number of shots per each task variation \
                             (-1 means max number of shots available in the dataset)')
     parser.add_argument('--task_size', default=-1, type=int)
+    parser.add_argument('--image', action='store_true')
 
     parser.add_argument('--gd', '-gd', default=-1, type=int)
     # checkpoint resuming and testing
@@ -63,126 +61,148 @@ def _parse_args():
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
     parser.add_argument('--eval_every_nsteps', default=1000, type=int)
+    parser.add_argument('--start_eval_after', default=-1, type=int)
+
     # wandb
     parser.add_argument('--use_wandb', '-wb', action='store_true')
     parser.add_argument('--wandb_id', type=str, help='Wandb id to allow for resuming')
     parser.add_argument('--run_name', type=str, default=None, help='Wandb run name, if not provided the deafult of wandb is used')
+    parser.add_argument('--num_workers', default=0, type=int)
 
     return parser.parse_args()
-
-
-class GCBCDataset(Dataset):
-
-    def __init__(
-        self,
-        data_path,
-        seed=0,
-        nshots_per_task=-1, # sets the number of examples per task variation, -1 means to use the max
-        task_size=-1,
-    ):
-
-        self.data_path = Path(data_path)
-        collector = OsilDataCollector.load(data_path)
-        self.raw_data = collector.data
-        self.nshots_per_task = nshots_per_task
-
-        # create this allowed ids to make it compatible with previously implemented evaluation functions
-        class_to_task_map = {}
-        class_id = 0
-        for task_id in self.raw_data:
-            task_size = len(self.raw_data[task_id]) if task_size == -1 else task_size
-            for var_id in sorted(self.raw_data[task_id].keys()):
-                if var_id < task_size:
-                    class_to_task_map[class_id] = (task_id, var_id)
-                    class_id += 1
-        self.allowed_ids = list(class_to_task_map.values())
-
-        states, actions, targets = [], [], []
-        for task_id, var_id in self.allowed_ids:
-            episodes = self.raw_data[task_id][var_id]
-
-            if len(episodes) < 2:
-                print(f'Skipping task {task_id}-{var_id}, because of insufficient examples')
-                continue
-
-            max_ep_idx = len(episodes) if nshots_per_task == -1 else nshots_per_task
-            if max_ep_idx < 2:
-                print(f'You need at least two examples per task to make an osil statement, using two instead.')
-                max_ep_idx = 2
-            if max_ep_idx > len(episodes):
-                print(f'Using fewer than {max_ep_idx}, since there are not too many samples for task {task_id}_{var_id}.')
-            for ep in episodes[:max_ep_idx]:
-                # select the length of each episode based on how large actions are
-                # the last large action set the end of an episode for imitation learning
-                # cond = (ep['action']**2).sum(-1)**0.5 > 0.05
-                # if cond.any():
-                    # add n steps after that so it learns to stay there for at least n more steps
-                    # last_step = min(np.where(cond)[0][-1] + 20, len(cond) - 1)
-                    # last_step = len(cond) - 1
-                # else:
-                    # continue
-                # states.append(ep['state'][:last_step + 1])
-                # actions.append(ep['action'][:last_step + 1])
-                states.append(ep['state'])
-                actions.append(ep['action'])
-                target = np.tile(ep['target'], (len(states[-1]), 1))
-                # location of eef
-                # target = np.tile(ep['state'][last_step, 4:6], (len(states[-1]), 1))
-                # target = np.tile(ep['state'][-1, 4:6], (len(states[-1]), 1))
-                targets.append(target)
-
-        self.states = np.concatenate(states, 0)
-        self.actions = np.concatenate(actions, 0)
-        self.targets = np.concatenate(targets, 0)
-        assert self.states.shape[0] == self.actions.shape[0] == self.targets.shape[0]
-        
-    def __len__(self):
-        return len(self.states)
-
-    def __getitem__(self, idx):
-        x = torch.as_tensor(self.states[idx], dtype=torch.float)
-        g = torch.as_tensor(self.targets[idx], dtype=torch.float)
-        y = torch.as_tensor(self.actions[idx], dtype=torch.float)
-
-        return x, g, y
 
 def main(pargs):
     exp_name = f'gcbcv2_reacher2d'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
+    num_workers = pargs.num_workers
+
     train_path = 'reacher_2d_train_v2'
     test_path = 'reacher_2d_test_v2'
-    train_dataset = GCBCDataset(data_path=train_path, nshots_per_task=pargs.num_shots, task_size=pargs.task_size)
-    test_dataset = GCBCDataset(data_path=test_path)
+
+    train_dataset = Reacher2DGCBCDataset(data_path=train_path, nshots_per_task=pargs.num_shots, task_size=pargs.task_size, image_based=pargs.image)
+    test_dataset = Reacher2DGCBCDataset(data_path=test_path, image_based=pargs.image)
 
     print('training set size:', len(train_dataset))
     print('test set size:',     len(test_dataset))
 
-
-    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=0)
-    vloader = DataLoader(test_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=0)
+    tloader = DataLoader(train_dataset, shuffle=True, batch_size=pargs.batch_size, num_workers=num_workers, pin_memory=True)
+    vloader = DataLoader(test_dataset, shuffle=False, batch_size=pargs.batch_size, num_workers=num_workers, pin_memory=True)
     obs, goal, act = train_dataset[0]
+    obs_imgs, goal_imgs, acts = next(iter(tloader))
+    
+    # s = time.time()
+    # for batch in tqdm.tqdm(tloader):
+    #     batch = [item.to(pargs.device) for item in batch]
+    #     pass
+    # print(f'time of data loading with {pargs.num_workers} workers: {time.time() - s}')
+    # breakpoint()
+
+    # #### visualizing matching of obs_imgs and goal_imgs
+    # import torchvision
+    # import einops
+    # grid_imgs = einops.rearrange([obs_imgs, goal_imgs], 'i B C H W -> (B i) C H W')
+    # grid_imgs = torchvision.utils.make_grid(grid_imgs, nrow=int(pargs.batch_size ** 0.5), pad_value=255)
+    
+    # plt.imshow(grid_imgs.permute(1, 2, 0))
+    # plt.savefig('test_img_input.png')
+    # breakpoint()
+
+    # # testing image data against environment
+    # from PIL import Image
+    # import imageio
+
+    # output_path = Path('./test_gcbc_img_data')
+    # output_path.mkdir(parents=True, exist_ok=True)
+    
+    # imgs = train_dataset.obses
+    # conds = train_dataset.conds
+    # states = train_dataset.states
+    # actions = train_dataset.actions
+
+    # def compare(var_id, cond_id):
+    #     cond_idx = np.where(conds[var_id] == cond_id)[0].item()
+
+    #     state = states[var_id][cond_idx]
+    #     dataset_imgs = imgs[var_id][cond_idx]
+    #     acs = actions[var_id][cond_idx]
+    #     playback_imgs = []
+    #     env = gym.make('Reacher2D-v1')
+    #     env.set_task(var_id, cond_id)
+    #     env.reset()
+    #     env.set_state(state[0,:2], state[0, 2:4])
+    #     for a in acs:
+    #         img = env.render('rgb_array')
+    #         pil_image = Image.fromarray(img)
+    #         pil_image = pil_image.resize((64, 64), Image.ANTIALIAS)
+    #         img = np.flipud(np.array(pil_image))
+    #         playback_imgs.append(img)
+    #         env.step(a)
+
+    #     playback_imgs = np.stack(playback_imgs, 0)
+
+    #     imageio.mimsave(output_path / 'playback.gif', playback_imgs)
+    #     imageio.mimsave(output_path / 'dataset.gif', dataset_imgs)
+
+    # # var_id = np.random.randint(len(imgs))
+    # var_id = 0
+    # cond_id = 9
+
+    # compare(var_id, cond_id)
+    # breakpoint()
 
     config = ParamDict(
         hidden_dim=pargs.hidden_dim,
-        obs_dim=obs.shape[-1],
+        obs_shape=obs.shape,
+        goal_shape=goal.shape,
         ac_dim=act.shape[-1],
-        goal_dim=goal.shape[-1],
         lr=pargs.lr,
         wd=pargs.weight_decay,
     )
+    
+    # config = ParamDict(
+    #     hidden_dim=pargs.hidden_dim,
+    #     obs_dim=obs.shape[-1],
+    #     goal_dim=goal.shape[-1],
+    #     ac_dim=act.shape[-1],
+    #     lr=pargs.lr,
+    #     wd=pargs.weight_decay,
+    # )
 
     ######## check model's input to output dependency
     args_var = vars(pargs)
     ckpt = args_var.get('ckpt', '')
     resume = args_var.get('resume', False)
-    evaluator_cls = EvaluatorReacher2D_GCBC
 
     
     # agent = Reacher2DModel.load_from_checkpoint(ckpt) if ckpt else Reacher2DModel(config)
-    agent = GCBCv2.load_from_checkpoint(ckpt) if ckpt else GCBCv2(config)
+    # agent = GCBCv2.load_from_checkpoint(ckpt) if ckpt else GCBCv2(config)
+    agent = GCBCv3.load_from_checkpoint(ckpt) if ckpt else GCBCv3(config)
     agent = agent.to(device=pargs.device)
+
+    evaluator_cls = EvaluatorReacher2D_GCBC_Img if agent.is_goal_image else EvaluatorReacher2D_GCBC_State
+
+
+    # # testing the evaluator
+    # test_evaluator = evaluator_cls(
+    #     ParamDict(max_eval_episodes=10, env_name='Reacher2DTest-v1', max_render=10, verbose=True),
+    #     test_dataset, output_dir='./test_reacher2d_gcbc', mode='test',
+    # )
+
+    # test_evaluator.eval(agent)
+
+    # # testing the loss computation
+    # agent.eval()
+    # losses = []
+    # for batch in tqdm.tqdm(tloader):
+    #     batch = [item.to(agent.device) for item in batch]
+    #     ret = agent.ff(batch, compute_loss=True)
+    #     losses.append(ret['loss'].item())
+    # print(f'At intialization loss = {np.mean(losses)}')
+    # agent.train()
+    # breakpoint()
+
 
     train = (ckpt and resume) or not ckpt
     if pargs.use_wandb and train:
@@ -219,22 +239,26 @@ def main(pargs):
 
     # evaluation callbacks
     train_evaluator = evaluator_cls(
-        ParamDict(max_eval_episodes=100, env_name='Reacher2D-v1'),
+        ParamDict(max_eval_episodes=10 if pargs.image else 100, 
+        env_name='Reacher2D-v1', is_image=pargs.image),
         train_dataset, mode='train'
     )
     eval_ckpt_train = EvaluationCallback(
         train_evaluator, 
         eval_every_n_updates=pargs.eval_every_nsteps, 
         dirpath=ckpt_callback_valid.dirpath,
+        start_evaluating_after=pargs.start_eval_after,
     )
 
     test_evaluator = evaluator_cls(
-        ParamDict(max_eval_episodes=100, env_name='Reacher2DTest-v1'),
+        ParamDict(max_eval_episodes=10 if pargs.image else 100, 
+        env_name='Reacher2DTest-v1', is_image=pargs.image),
         test_dataset, mode='test',
     )
     eval_ckpt_test = EvaluationCallback(test_evaluator, 
         eval_every_n_updates=pargs.eval_every_nsteps,
         dirpath=ckpt_callback_valid.dirpath,
+        start_evaluating_after=pargs.start_eval_after,
     )
 
 
@@ -263,9 +287,9 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
 
-    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2D-v1')
+    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2D-v1', is_image=pargs.image)
     evaluator_cls(conf, train_dataset, eval_output_dir, mode='train').eval(agent)
-    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2DTest-v1')
+    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2DTest-v1', is_image=pargs.image)
     evaluator_cls(conf, test_dataset, eval_output_dir, mode='test').eval(agent)
 
 if __name__ == '__main__':
