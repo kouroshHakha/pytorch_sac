@@ -76,6 +76,11 @@ class ReacherMILEnv(mujoco_env.MujocoEnv, utils.EzPickle):
 
         mujoco_env.MujocoEnv.__init__(self, self.xml_paths[self.xml_idx], 5)
 
+        # pushing the cubes down so the don't occlude the arm
+        self.sim.model.body_pos[-3:, -1] = 0.05 # make cubes elevated 
+        self.sim.model.geom_size[-3:, :2] = np.ones(2)*0.05 # make cubes larger in xy
+        self.sim.forward()
+
         self.target_idx = np.where(self.cube_order == 2)[0][0]
 
     def get_xml(self):
