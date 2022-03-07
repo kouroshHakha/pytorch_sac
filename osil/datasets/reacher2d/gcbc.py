@@ -10,6 +10,7 @@ from osil.nets import get_goal_color
 from utils import read_hdf5, stack_frames
 
 import time
+import matplotlib.pyplot as plt
 
 class Reacher2DGCBCDataset(Dataset):
 
@@ -49,7 +50,7 @@ class Reacher2DGCBCDataset(Dataset):
         conds = []
         print('Loading the dataset into memory ...')
         for task_id, var_id in self.allowed_ids:
-            # if var_id > 150: # smaller training set
+            # if var_id > 100: # smaller training set
             #     continue
             episodes = self.raw_data[task_id][var_id]
 
@@ -71,21 +72,21 @@ class Reacher2DGCBCDataset(Dataset):
                 if self.image_based:
 
                     original_path = self.data_path / 'torch_imgs' / f'{var_id}_{cond_id}.torch'
-                    cached_path = self.data_path / f'torch_imgs_processed_stack_{n_stack_frames}' / f'{var_id}_{cond_id}.torch'
+                    # cached_path = self.data_path / f'torch_imgs_processed_stack_{n_stack_frames}' / f'{var_id}_{cond_id}.torch'
 
-                    if cached_path.exists():
-                        stacked_imgs = torch.load(cached_path)
-                        # this already has C, H, W order
-                    else:
-                        cached_path.parent.mkdir(exist_ok=True, parents=True)
-                        img = torch.load(original_path).permute(0, 3, 1, 2) #channel first
-                        stacked_imgs = stack_frames(img, n_stack_frames)
-                        # # unit test
-                        # assert all(torch.all(stacked_imgs[i] == img[i-n_stack_frames+1:i+1].reshape(n_stack_frames*3, 64, 64)) for i in range(n_stack_frames, len(img)))
-                        torch.save(stacked_imgs, cached_path)
-                    
-                    
-                    task_obses.append(self.transform(stacked_imgs).numpy())
+                    # if cached_path.exists():
+                    #     stacked_imgs = torch.load(cached_path)
+                    #     # this already has C, H, W order
+                    # else:
+                    # cached_path.parent.mkdir(exist_ok=True, parents=True)
+                    img = torch.load(original_path).permute(0, 3, 1, 2) #channel first
+                    # breakpoint()
+                    # stacked_imgs = stack_frames(img, n_stack_frames)
+                    # # unit test
+                    # assert all(torch.all(stacked_imgs[i] == img[i-n_stack_frames+1:i+1].reshape(n_stack_frames*3, 64, 64)) for i in range(n_stack_frames, len(img)))
+                    # torch.save(stacked_imgs, cached_path)
+                    task_obses.append(self.transform(img).numpy())
+                    # task_obses.append(self.transform(stacked_imgs).numpy())
 
                 # for some reason images are one time step short from the actual state representation
                 ep_len = len(ep['state']) - 1 if self.image_based else len(ep['state'])
@@ -143,18 +144,51 @@ class Reacher2DGCBCDataset(Dataset):
         # get the actions
         acs = self.actions[task_idx][state_action_idx]
         # within a trajectory sample a random time-step
-        rand_tstep = np.random.randint(len(acs), size=())
+        rand_tstep = np.random.randint(len(acs), size=()).item()
+        # rand_tstep = np.random.randint(1, size=()).item()
         ac = torch.as_tensor(acs[rand_tstep], dtype=torch.float)
-        
 
         # get the cur and goal state
         if self.image_based:
-            s = torch.as_tensor(self.obses[task_idx][state_action_idx][rand_tstep])
+            last_frame = self.obses[task_idx][state_action_idx][rand_tstep]
+            if self.n_stack_frames > 1:
+                if rand_tstep >= self.n_stack_frames - 1:
+                    s = torch.as_tensor(self.obses[task_idx][state_action_idx][rand_tstep-self.n_stack_frames+1:rand_tstep+1])
+                    s = s.reshape(self.n_stack_frames * 3, *last_frame.shape[1:])
+                else:
+                    # zero pad
+                    padding_shape = last_frame.shape
+                    cat_list = [np.zeros(padding_shape, dtype=np.uint8) for _ in range(self.n_stack_frames - rand_tstep - 1)]
+                    cat_list += [frame for frame in self.obses[task_idx][state_action_idx][:rand_tstep+1]]
+                    s_np = np.concatenate(cat_list, 0)
+                    s = torch.as_tensor(s_np)
+            else:
+                s = torch.as_tensor(self.obses[task_idx][state_action_idx][rand_tstep])
+
             # target_idx = (state_action_idx + 1) % len(self.states[task_idx])
-            # g = torch.as_tensor(self.obses[task_idx][target_idx][-1])
-            g = torch.as_tensor(self.obses[task_idx][state_action_idx][-1, -3:])
+            g = torch.as_tensor(self.obses[task_idx][target_idx][-1, -3:])
+            # g = torch.as_tensor(self.obses[task_idx][state_action_idx][-1, -3:])
+
+
         else:
             s = torch.as_tensor(self.states[task_idx][state_action_idx][rand_tstep], dtype=torch.float)
             g = torch.as_tensor(self.targets[task_idx][target_idx], dtype=torch.float)
 
-        return s, g, ac
+        target_color = torch.as_tensor(self.targets[task_idx][target_idx], dtype=torch.float)
+
+        # predict the goal eef location from both demo (goal) and current state
+        target_eef = torch.as_tensor(self.states[task_idx][state_action_idx][-1, 4:6], dtype=torch.float)
+
+        g_aug = torch.as_tensor(self.obses[task_idx][state_action_idx][-1, -3:])
+        
+        data = dict(
+            obs=s,
+            goal=g,
+            action=ac,
+            target_color=target_color,
+            target_eef=target_eef,
+            goal_aug=g_aug,
+        )
+
+        return data
+        
