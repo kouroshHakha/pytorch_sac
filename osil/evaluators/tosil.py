@@ -2,6 +2,7 @@
 import torch
 from osil.evaluators import EvaluatorBase
 from osil.data import collate_fn_for_supervised_osil
+import numpy as np
 
 class TOsilEvaluator(EvaluatorBase):
 

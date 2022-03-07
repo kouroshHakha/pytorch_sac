@@ -142,9 +142,10 @@ class Reacher2DEvalBase(EvaluatorBase):
             success = False
             total_reward = 0
             policy_a, policy_s = [], []
+            s_list = [s]
             for _ in demo_action: # since the ep_len is always n it makes sense to do this
                 # step through the policy
-                a = self._get_action(agent, s, goal)
+                a = self._get_action(agent, s_list, goal)
                 if test_counter < max_render:
                     policy_imgs.append(self._render(env))
                 ns, reward, _, _ = env.step(a)
@@ -157,6 +158,7 @@ class Reacher2DEvalBase(EvaluatorBase):
 
                 if self.is_image:
                     s = self._render(env, agent.conf.obs_shape[-1], channel_first=True)
+                s_list.append(s)
 
                 total_reward += reward
                 
@@ -169,7 +171,8 @@ class Reacher2DEvalBase(EvaluatorBase):
 
         summary = dict(
             success_rate=float(np.mean(successes)),
-            total_reward=float(np.mean(rewards))
+            total_reward=float(np.mean(rewards)),
+            successes=successes,
         )
 
         images_dict = dict(demo=demo_imgs, policy=policy_imgs, expert=expert_imgs)
