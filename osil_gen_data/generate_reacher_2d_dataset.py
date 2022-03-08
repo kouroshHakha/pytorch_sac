@@ -20,7 +20,7 @@ from osil_gen_data.data_collector import OsilDataCollector
 
 render = True
 mode = 'train'
-output_path = f'reacher_2d_{mode}'
+output_path = f'reacher_2d_{mode}_v3'
 
 if __name__ == '__main__':
 
@@ -39,7 +39,7 @@ if __name__ == '__main__':
         data = read_pickle(pkl_file)
 
         task_id = int(Path(pkl_file).stem.split('_')[1])
-        gif_dir = Path(pkl_file).parent / f'color_{task_id}'
+        gif_dir = Path(output_path) / 'gifs' / f'color_{task_id}'
         gif_dir.mkdir(parents=True, exist_ok=True)
         
         for demo_idx, cond_id in enumerate(data['demoConditions']):
@@ -60,7 +60,7 @@ if __name__ == '__main__':
                     # imgs.append(env.render('rgb_array'))
                     img = env.render('rgb_array')
                     pil_image = Image.fromarray(img)
-                    pil_image = pil_image.resize((128, 128), Image.ANTIALIAS)
+                    pil_image = pil_image.resize((64, 64), Image.ANTIALIAS)
                     img = np.flipud(np.array(pil_image))
                     imgs.append(img)
 
@@ -72,7 +72,7 @@ if __name__ == '__main__':
             if imgs:
                 imageio.mimsave(gif_path, imgs)
 
-            ep = dict(state=obses, action=actions, target=env.get_obs_dict()['target_color'], cond_id=cond_id)
+            ep = dict(state=obses, action=actions, target=env.get_obs_dict()['target_color'], cond_id=np.array(cond_id))
             dataset.append(ep, 0, task_id)
         dataset.save_var(0, task_id)
 
