@@ -990,7 +990,7 @@ class EvaluationCallback(pl.Callback):
                 trainer.save_checkpoint(filepath, weights_only=False)
                 write_yaml(Path(self.dirpath) / f'best_summary_{self.evaluator.mode}.yaml', summary)
 
-            summary = {f'{k}_{self.evaluator.mode}': v for k, v in summary.items()}
+            summary = {f'{k}_{self.evaluator.mode}': v for k, v in summary.items() if not isinstance(v, list)}
 
             if logger:
                 pl_module.log_dict(summary)
