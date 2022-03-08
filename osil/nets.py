@@ -727,7 +727,11 @@ class GCBCv5(BaseLightningModule):
     def ff(self, batch, compute_loss=True):
         act = batch['action']
 
-        enc_dict = self.get_enc(dict(obs=batch['obs'], goal=batch['goal'], goal_aug=batch['goal_aug']))
+        use_contrastive_loss = self.conf.get('use_contrastive_loss', False)
+        enc_input = dict(obs=batch['obs'], goal=batch['goal'])
+        if use_contrastive_loss:
+            enc_input.update(goal_aug=batch['goal_aug'])
+        enc_dict = self.get_enc(enc_input)
         pred_ac = self._get_action(enc_dict['obs'], enc_dict['goal'])
         
         ret = dict(loss=None)
@@ -751,10 +755,10 @@ class GCBCv5(BaseLightningModule):
             loss += self.conf.use_target_eef_loss * loss_eef
 
         # aux. loss: contrastive loss for supervising the goal embedding (goal and goal_aug)
-        if self.conf.get('use_contrastive_loss', False):
+        if use_contrastive_loss:
             contra_loss = self.contra_loss(enc_dict['goal'], enc_dict['goal_aug'])
             ret.update(loss_contra=contra_loss.detach())
-            loss += self.conf.use_contrastive_loss * contra_loss
+            loss += use_contrastive_loss * contra_loss
 
         if compute_loss:
             ret.update(loss=loss)
@@ -783,15 +787,16 @@ class GCBCv5(BaseLightningModule):
 
         if self.is_obs_image:
             y = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
-            x = einops.rearrange(y, 'i B C H W -> (B i) C H W')
-            obs_emb = self.enc(x).view(B, self.n_stack, -1).contiguous() # B, N, D
+            x = einops.rearrange(y, 'i B C H W -> (B i) C H W').contiguous()
+            obs_emb = self.enc(x).view(B, self.n_stack, -1) # B, N, D
         else:
             obs_emb = obs
 
         ret = dict(obs=obs_emb)
         # goal / goal augmented
         for key in batch:
-            ret[key] = self.enc(batch[key]) if self.is_goal_image else batch[key]
+            if key.startswith('goal'):
+                ret[key] = self.enc(batch[key].contiguous()) if self.is_goal_image else batch[key]
         return ret
 
     def get_action(self, obs, goal):
