@@ -35,4 +35,5 @@ class GCBCEvaluator(EvaluatorBase):
         # pred_ac = agent(state_tens, goal_tens)
         pred_ac = agent.get_action(state_tens, goal_tens)
         a = pred_ac.squeeze(0).detach().cpu().numpy()
+        agent.train()
         return a
