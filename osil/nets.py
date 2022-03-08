@@ -699,6 +699,10 @@ class GCBCv5(BaseLightningModule):
         if self.conf.get('use_target_eef_loss', False):
             # eef_dim = 2
             self.eef_net = MLP(2 * image_enc_hdim, 2, h_dim, 3)
+
+        if self.conf.get('use_contrastive_loss', False):
+            # projection head
+            self.contra_proj = MLP(image_enc_hdim, h_dim, h_dim, n_layers=1)
         
 
     def bc_loss(self, pred_ac, target_ac):
@@ -712,10 +716,18 @@ class GCBCv5(BaseLightningModule):
         
         return loss
 
-    def ff(self, batch, compute_loss=True):
-        obs, goal, act = batch['obs'], batch['goal'], batch['action']
+    def contra_loss(self, x, x_aug):
 
-        enc_dict = self.get_enc(batch)
+        z = self.contra_proj(x)
+        z_aug = self.contra_proj(x_aug)
+        loss = ContrastiveLossELI5(x.shape[0])(z, z_aug)
+
+        return loss
+
+    def ff(self, batch, compute_loss=True):
+        act = batch['action']
+
+        enc_dict = self.get_enc(dict(obs=batch['obs'], goal=batch['goal'], goal_aug=batch['goal_aug']))
         pred_ac = self._get_action(enc_dict['obs'], enc_dict['goal'])
         
         ret = dict(loss=None)
@@ -739,7 +751,10 @@ class GCBCv5(BaseLightningModule):
             loss += self.conf.use_target_eef_loss * loss_eef
 
         # aux. loss: contrastive loss for supervising the goal embedding (goal and goal_aug)
-        # TODO
+        if self.conf.get('use_contrastive_loss', False):
+            contra_loss = self.contra_loss(enc_dict['goal'], enc_dict['goal_aug'])
+            ret.update(loss_contra=contra_loss.detach())
+            loss += self.conf.use_contrastive_loss * contra_loss
 
         if compute_loss:
             ret.update(loss=loss)
@@ -769,12 +784,14 @@ class GCBCv5(BaseLightningModule):
         if self.is_obs_image:
             y = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
             x = einops.rearrange(y, 'i B C H W -> (B i) C H W')
-            obs_emb = self.enc(x).view(B, self.n_stack, -1) # B, N, D
+            obs_emb = self.enc(x).view(B, self.n_stack, -1).contiguous() # B, N, D
         else:
             obs_emb = obs
 
-        goal_emb = self.enc(goal) if self.is_goal_image else goal
-        ret = dict(obs=obs_emb, goal=goal_emb)
+        ret = dict(obs=obs_emb)
+        # goal / goal augmented
+        for key in batch:
+            ret[key] = self.enc(batch[key]) if self.is_goal_image else batch[key]
         return ret
 
     def get_action(self, obs, goal):
@@ -816,7 +833,7 @@ class GCBCv5(BaseLightningModule):
 
     def _get_action(self, obs_emb, goal_emb):
         B, N, D = obs_emb.size()
-        mlp_in = torch.cat([obs_emb.view(B, -1), goal_emb], -1)
+        mlp_in = torch.cat([obs_emb.view(B, -1).contiguous(), goal_emb], -1)
         pred_ac = self.ctrl_net(mlp_in)
         pred_ac = pred_ac.tanh()
 
