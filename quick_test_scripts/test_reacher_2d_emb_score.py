@@ -1,51 +1,37 @@
 
 import argparse
-import dataclasses
-from pathlib import Path
-
-import dcargs
-import matplotlib.colors as mcolors
-import matplotlib.pyplot as plt
 import numpy as np
-import pytorch_lightning as pl
-import torch
-import tqdm
+from pathlib import Path
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
-from torch.utils.data import DataLoader, TensorDataset
+import tqdm
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 
-from osil.data import SPLITS, OsilPairedDataset, collate_fn_for_supervised_osil
-from osil.nets import TOsilSemisupervised, TOsilv1
+from sklearn.manifold import TSNE
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+import pytorch_lightning as pl
+
+from osil.data import collate_fn_for_supervised_osil
+from quick_test_scripts.train_tosilv1_reacher_2d import OsilPairedDatasetReacher2D
+from osil.nets import TOsilv1, TOsilSemisupervised, TOsilv1DebugReacher, get_goal_color
 from utils import write_yaml
 
 
 def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt', type=str)
-    parser.add_argument('--model', type=str, choices=['osil', 'semi-osil'])
-    parser.add_argument('--dataset_path', default='./maze2d-open-v0_osil_short_trajs_v2', type=str)
-    parser.add_argument('--max_padding', default=128, type=int)
+    parser.add_argument('--model', type=str, choices=['osil'])
+    parser.add_argument('--dataset_path', default='./reacher_2d_train_v2', type=str)
+    parser.add_argument('--max_padding', default=50, type=int)
     parser.add_argument('--metric', default='euclidean', type=str)
     parser.add_argument('--random', action='store_true')
 
     return parser.parse_args()
-
-
-@dataclasses.dataclass
-class Args:
-    """
-    Args for the script.
-    """
-    ckpt: str
-    model: str = 'osil'
-    dataset_path: str = './reacher_7dof-v1_osil_dataset_v4'
-    max_padding: str = 64
-    metric: str = "euclidean"
-    random: bool = False
-
 
 def main(pargs):
     print(f'Running embedding evalution on {pargs.ckpt} ...')
@@ -59,34 +45,32 @@ def main(pargs):
         conf = torch.load(pargs.ckpt)['hyper_parameters']
 
     if pargs.model == 'osil':
-        agent = TOsilv1(conf) if conf else TOsilv1.load_from_checkpoint(pargs.ckpt)
+        # agent = TOsilv1(conf) if conf else TOsilv1.load_from_checkpoint(pargs.ckpt)
+        agent = TOsilv1DebugReacher(conf) if conf else TOsilv1DebugReacher.load_from_checkpoint(pargs.ckpt)
     elif pargs.model == 'semi-osil':
         agent = TOsilSemisupervised(conf) if conf else TOsilSemisupervised.load_from_checkpoint(pargs.ckpt)
     else:
         raise ValueError(f'Unknown model {pargs.model}')
 
-    env_name = ''
-    if data_path.stem.startswith('maze2d-open-v0'):
-        env_name = 'maze2d-open-v0'
-    elif data_path.stem.startswith('reacher_7dof-v1'):
-        env_name = 'reacher_7dof-v1'
     
     # create a flattened dataset with class_ids
-    dset = OsilPairedDataset(data_path=data_path, mode='train', env_name=env_name)
+    dset = OsilPairedDatasetReacher2D(data_path=data_path)
     raw_data = dset.raw_data
     
     class_id = 0
     demo_states, demo_actions, demo_masks = [], [], []
     classes = []
+    target_colors = []
     for task_id in raw_data:
         for var_id in sorted(raw_data[task_id].keys()):
-            # TODO: focus on the first 100 for now
+            if var_id > 150:
+                continue
             episodes = [
                 dict(
                     context_s=torch.as_tensor(ep['state'], dtype=torch.float),
                     context_a=torch.as_tensor(ep['action'], dtype=torch.float),
                 )
-            for ep in raw_data[task_id][var_id][:100]
+            for ep in raw_data[task_id][var_id]
             ]
             episodes_padded = collate_fn_for_supervised_osil(episodes, padding=pargs.max_padding)
             demo_states.append(episodes_padded['context_s'])
@@ -94,12 +78,16 @@ def main(pargs):
             demo_masks.append(episodes_padded['attention_mask'])
             classes.append(torch.tensor([class_id]*len(episodes)))
 
+            colors, _ = get_goal_color(episodes_padded['context_s'][:, -1])
+            target_colors.append(colors)
+
             class_id += 1
 
     demo_states = torch.cat(demo_states, 0)
     demo_actions = torch.cat(demo_actions, 0)
     demo_masks = torch.cat(demo_masks, 0)
     classes = torch.cat(classes, 0).long()
+    target_colors = torch.cat(target_colors, 0)
 
     # get the embeddings
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -117,26 +105,25 @@ def main(pargs):
     demo_embs = torch.cat(embs, 0).detach().cpu().numpy()
     classes = classes.detach().cpu().numpy()
 
-    splits = SPLITS[env_name]
-    labels = []
-    colors = np.zeros_like(classes)
-    for idx, mode in enumerate(splits):
-        for c in splits[mode]:
-            colors[classes==c] = idx
-        labels.append(mode)
+    # # labels = []
+    # colors = np.zeros_like(classes)
+    # for c in range(class_id):
+    #     colors[classes==c] = c
+    #     # labels.append('')
 
-    label_color_map = dict(train='blue', valid='orange', test='green')
-    label_colors = [label_color_map[l] for l in labels]
+    # label_color_map = dict(train='blue', valid='orange', test='green')
+    # label_colors = [label_color_map[l] for l in labels]
 
-    fname_suf = ''
+    fname_suf = data_path.stem
     if pargs.random:
-        fname_suf = 'random'
+        fname_suf += '_random'
 
+    print(f'Number of trajectories: {len(demo_embs)}')
     # print('Running TSNE ...')
     # demo_2d = TSNE(n_components=2).fit_transform(demo_embs)
-    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
+    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors) #, cmap=mcolors.ListedColormap(label_colors))
     # h,l = s_plt.legend_elements()
-    # plt.legend(handles = h, labels=labels)
+    # # plt.legend(handles = h, labels=labels)
     # plt.savefig(output_dir / f'tsne_demo_embs_{fname_suf}.png' if fname_suf else 'tsne_demo_embs.png')
 
     # plt.close()
@@ -144,9 +131,9 @@ def main(pargs):
     # print('Running PCA ...')
 
     # demo_2d = PCA(n_components=2).fit_transform(demo_embs)
-    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors, cmap=mcolors.ListedColormap(label_colors))
+    # s_plt = plt.scatter(demo_2d[:, 0], demo_2d[:, 1], s=5, c=colors) #, cmap=mcolors.ListedColormap(label_colors))
     # h,l = s_plt.legend_elements()
-    # plt.legend(handles = h, labels=labels)
+    # # plt.legend(handles = h, labels=labels)
     # plt.savefig(output_dir / f'pca_demo_embs_{fname_suf}.png' if fname_suf else 'pca_demo_embs.png')
 
 
@@ -200,7 +187,7 @@ def main(pargs):
     # compute trajectory retrieval scores
     print('Computing trajectory retrieval score ...')
     # last k should be 99 since except the index itself there are 99 others
-    k_list = [1, 3, 5, 10, 25, 50, 100, 200]
+    k_list = [1, 2, 3, 4, 5, 10]
     # k_list = [200]
 
     tr_score_list = []
@@ -215,11 +202,12 @@ def main(pargs):
                 dist = 1 - (demo_embs @ demo_embs[idx].T) / norm_embs / norm_emb
             dist[idx] = float('inf')
             cand_inds = np.argsort(dist)[:k]
-            retrieved_classes = classes[cand_inds]
-            query_acc = (retrieved_classes == classes[idx]).sum() / k
+            retrieved_colors = target_colors[cand_inds]
+            query_acc = (torch.all(retrieved_colors == target_colors[idx], -1)).sum() / k
             query_acc_list.append(query_acc)
         tr_score = np.mean(query_acc_list)
         tr_score_list.append(float(tr_score))
+        print(tr_score)
 
     print(f'{"k":2}, {"tr_score":10}')
     for k, tr_score in zip(k_list, tr_score_list):
@@ -231,27 +219,6 @@ def main(pargs):
         write_yaml(output_dir / f'tr_results_{fname_suf}.yaml' if fname_suf else 'tr_results.yaml', results)
     else:
         write_yaml(output_dir / f'tr_results_cosine_{fname_suf}.yaml' if fname_suf else 'tr_results_cosine.yaml', results)
-    return results
 
 if __name__ == '__main__':
-    paths = []
-    results  = []
-    for path in paths:
-        print(path)
-        a = Args(ckpt = path)
-        r = main(a)
-        print()
-        results.append(r)
-
-    names = []
-    for idx, r in enumerate(results):
-        #plots the k_list and tr_score
-        plt.plot(r['k_list'], r['tr_scores'], label = f"NS_{names[idx]}")
-    plt.legend()
-    plt.savefig("contrastive.pdf", dpi=200)
-
-
-    # main(_parse_args())
-
-    # main(_parse_args())
-    # main(_parse_args())
+    main(_parse_args())

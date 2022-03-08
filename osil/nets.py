@@ -1,5 +1,7 @@
+from base64 import encode
+from collections import defaultdict
 from typing import Optional
-from numpy import dtype
+from numpy import dtype, inner
 
 import torch
 import torch.nn as nn
@@ -7,7 +9,41 @@ from torch.nn import functional as F
 
 import pytorch_lightning as pl
 
+import dataclasses
+
 import osil.utils as utils
+from osil.resnet import ResNetBasicBlock
+
+
+
+class MLP(nn.Module):
+
+    def __init__(self, in_channel, out_channel, hidden_dim, n_layers, activation=nn.ReLU(), bnorm=False, input_norm=None) -> None:
+        super().__init__()
+
+        self.in_channel = in_channel
+        self.out_channel = out_channel
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.activation = activation
+
+        self.net = []
+
+        dims = [in_channel] + [hidden_dim] * n_layers + [out_channel]
+        net = []
+        if input_norm:
+            net.append(input_norm)
+        for h1, h2 in zip(dims[:-1], dims[1:]):
+            net.append(nn.Linear(h1, h2))
+            if bnorm:
+                net.append(nn.BatchNorm1d(h2))
+            net.append(activation)
+        net.pop()
+
+        self.net = nn.Sequential(*net)
+    
+    def forward(self, x):
+        return self.net(x)
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, conf):
@@ -54,35 +90,20 @@ class Encoder(nn.Module):
         super().__init__()
 
         assert len(obs_shape) == 3
-        # self.repr_dim = 1 * 35 * 35
-        # self.repr_dim = h_dim
-
-        # self.convnet = nn.Sequential(
-        #     nn.Conv2d(obs_shape[0], 32, 3, stride=2),
-        #     nn.ReLU(),
-        #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(),
-        #     nn.Conv2d(32, 32, 3, stride=1),
-        #     nn.ReLU(),
-        #     nn.Conv2d(32, 1, 3, stride=1),
-        #     nn.ReLU()
-        # )
+        assert obs_shape[1] == obs_shape[2] == 64
 
         self.convnet = nn.Sequential(
-            nn.Conv2d(obs_shape[0], 32, 8, stride=4),
+            nn.Conv2d(obs_shape[0], 32, 3, stride=2), # 31x31
+            nn.ReLU(), 
+            nn.Conv2d(32, 32, 3, stride=2), # 15x15
+            nn.ReLU(), 
+            nn.Conv2d(32, 32, 3, stride=2), # 7x7
             nn.ReLU(),
-            nn.Conv2d(32, 32, 4, stride=2),
+            nn.Conv2d(32, 32, 3, stride=2), # 3x3
             nn.ReLU(),
-            nn.Conv2d(32, 32, 3, stride=1),
+            nn.Conv2d(32, h_dim, 3, stride=2), # 1x1
             nn.ReLU(),
-            nn.Conv2d(32, 32, 3, stride=1),
-            nn.ReLU(),
-            nn.Conv2d(32, h_dim, 5, stride=1),
-            nn.ReLU()
         )
-
-        # self.lin = nn.Linear(self.repr_dim, h_dim, bias=True)
-
         self.apply(utils.weight_init)
 
     def forward(self, obs):
@@ -91,6 +112,120 @@ class Encoder(nn.Module):
         h = h.view(h.shape[0], -1)
         return h
 
+
+class Encoderv2(nn.Module):
+    def __init__(self, obs_shape, h_dim):
+        super().__init__()
+
+        assert len(obs_shape) == 3
+        assert obs_shape[1] == obs_shape[2] == 64
+
+        self.convnet = nn.Sequential(
+            nn.Conv2d(obs_shape[0], 32, 5, stride=2, padding=2), # 32x32
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=4, stride=4), # 8x8
+            #############
+            nn.Conv2d(32, 32, 3, stride=1, padding='same'), # 8x8
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 4x4
+            #############
+            nn.Conv2d(32, 32, 3, stride=1, padding='same'), # 4x4
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), # 2x2
+            #############
+            nn.Conv2d(32, h_dim, 3, stride=1, padding='same'), # 2x2
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), # 1x1
+        )
+        
+                
+        x = torch.rand(obs_shape)[None]
+        y = self.convnet(x)
+        assert y.shape[1:] == (h_dim, 1, 1)
+        self.apply(utils.weight_init)
+
+    def forward(self, obs):
+        obs = obs / 255.0 - 0.5
+        h = self.convnet(obs)
+        h = h.view(h.shape[0], -1)
+        return h
+
+class EncoderWithBnorm(Encoder):
+
+    def __init__(self, obs_shape, h_dim):
+        super().__init__(obs_shape, h_dim)
+
+        assert len(obs_shape) == 3
+        assert obs_shape[1] == obs_shape[2] == 64
+
+        self.convnet = nn.Sequential(
+            nn.Conv2d(obs_shape[0], 32, 3, stride=2), # 31x31
+            nn.BatchNorm2d(32),
+            nn.ReLU(), 
+            nn.Conv2d(32, 32, 3, stride=2), # 15x15
+            nn.BatchNorm2d(32),
+            nn.ReLU(), 
+            nn.Conv2d(32, 32, 3, stride=2), # 7x7
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, stride=2), # 3x3
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, h_dim, 3, stride=2), # 1x1
+            nn.BatchNorm2d(h_dim),
+            nn.ReLU(),
+        )
+        
+        self.apply(utils.weight_init)
+
+class EncoderResNet(Encoder):
+
+    def __init__(self, obs_shape, h_dim):
+        super().__init__(obs_shape, h_dim)
+
+        assert len(obs_shape) == 3
+        assert obs_shape[1] == obs_shape[2] == 64
+
+        self.convnet = nn.Sequential(
+            ResNetBasicBlock(3, 32, downsampling=2),
+            ResNetBasicBlock(32, 32, downsampling=2),
+            ResNetBasicBlock(32, 32, downsampling=2),
+            ResNetBasicBlock(32, 32, downsampling=2),
+            ResNetBasicBlock(32, 32, downsampling=2),
+            ResNetBasicBlock(32, h_dim, downsampling=2),
+        )
+
+
+class Encoder28(nn.Module):
+    def __init__(self, obs_shape, h_dim):
+        super().__init__()
+
+        assert len(obs_shape) == 3
+        assert obs_shape[1] == obs_shape[2] == 28
+
+        self.convnet = nn.Sequential(
+            nn.Conv2d(obs_shape[0], 32, 3, stride=1, padding=1), # 32x28x28
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 32x14x14
+            nn.Conv2d(32, 32, 3, stride=1, padding=1), # 32x14x14
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 32x7x7
+            nn.Conv2d(32, 64, 3, stride=1), # 64x4x4
+            nn.ReLU(), 
+            nn.MaxPool2d(kernel_size=2, stride=2), # 64x2x2
+        )
+        
+        # x = torch.rand(obs_shape)[None]
+        # y = self.convnet(x).flatten()
+        # self.linear = nn.Linear(y.shape[0], h_dim)
+        self.apply(utils.weight_init)
+
+    def forward(self, obs):
+        obs = obs / 255.0 - 0.5
+        h = self.convnet(obs)
+        h = h.view(h.shape[0], -1)
+        # h = self.linear(h)
+        return h
 
 
 class BC(pl.LightningModule):
@@ -222,6 +357,498 @@ class GCBCv2(BaseLightningModule):
         # TODO: limiting actions to -1, 1
         pred_ac = pred_ac.tanh()
         return pred_ac
+
+
+class GCBCv3(BaseLightningModule):
+
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    def _check_obs_and_goal(self, obs, goal):
+        assert obs.shape[1:] == self.conf.obs_shape, 'observation shape is not correct.'
+        assert goal.shape[1:] == self.conf.goal_shape, 'goal shape is not correct.'
+
+    
+    def _build_network(self):
+        self.is_obs_image = len(self.conf.obs_shape) > 1
+        self.is_goal_image = len(self.conf.goal_shape) > 1
+        h_dim = self.conf.hidden_dim
+        ac_dim = self.conf.ac_dim
+        self.image_enc_hdim = image_enc_hdim = self.conf.goal_enc_dim
+
+        self.enc_obs = None
+        self.enc_goal = None
+        self.enc = None
+        if self.is_obs_image:
+            obs_shape = self.conf.obs_shape
+            goal_shape = self.conf.goal_shape
+
+            # trying out 28x28 input
+            encoder_cls = EncoderResNet if obs_shape[-1] == 64 else Encoder28
+            # encoder_cls = Encoder if obs_shape[-1] == 64 else Encoder28
+
+            if self.is_goal_image:
+                assert obs_shape[-1] == goal_shape[-1], 'Observation and goal images should be of the same W'
+                assert obs_shape[-2] == goal_shape[-2], 'Observation and goal images should be of the same H'
+                # enc_in_shape = (obs_shape[0] + goal_shape[0], ) + tuple(obs_shape[1:])
+
+                # enc_in_shape = (obs_shape[0] ,) + tuple(obs_shape[1:])
+                enc_in_shape = (goal_shape[0] ,) + tuple(obs_shape[1:])
+                self.enc = encoder_cls(enc_in_shape, image_enc_hdim)
+                # self.enc_obs = encoder_cls(obs_shape, image_enc_hdim)
+                # self.enc_goal = encoder_cls(goal_shape, image_enc_hdim)
+                
+                # mlp_channel_in = h_dim 
+                # mlp_channel_in = h_dim*2
+                self.n_stack = obs_shape[0] // goal_shape[0]
+                mlp_channel_in = (1 + self.n_stack) * image_enc_hdim
+            else:
+                self.enc_obs = encoder_cls(obs_shape, image_enc_hdim)
+                # self.enc = encoder_cls(obs_shape, h_dim)
+                mlp_channel_in = h_dim + self.conf.goal_shape[-1]
+        else:
+            mlp_channel_in = self.conf.obs_shape[-1] + self.conf.goal_shape[-1]
+
+        self.mlp = MLP(mlp_channel_in, ac_dim, h_dim, n_layers=4, activation=nn.ReLU())
+        self.color_network = MLP(image_enc_hdim, 3, h_dim, 3)
+
+    
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+        loss = F.mse_loss(pred_ac, target_ac)
+        
+        return loss
+
+    def ff(self, batch, compute_loss=True):
+        obs, goal, act, target_color = batch
+        pred_ac, pred_target_color = self(obs, goal)
+        ret = dict(pred_ac=pred_ac.detach())
+        if compute_loss:
+            loss = self.bc_loss(pred_ac, act)
+            loss_color = self.bc_loss(pred_target_color, target_color)
+            ret['loss'] = loss + loss_color
+            ret['loss_action'] = loss.detach()
+            ret['loss_color'] = loss_color.detach()
+        return ret
+
+    def forward(self, obs, goal):
+
+        self._check_obs_and_goal(obs, goal)
+
+        if self.is_obs_image and self.is_goal_image:
+            # enc_in = torch.cat([obs, goal], dim=1) # cat dim = C
+            # mlp_in = self.enc(enc_in)
+            # mlp_in = torch.cat([self.enc_obs(obs), self.enc_goal(goal)], -1)
+
+            # mlp_in = torch.cat([self.enc(obs), self.enc(goal)], -1)
+            obses = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
+            encodings = [self.enc(x) for x in obses + [goal]]
+            mlp_in = torch.cat(encodings, -1)
+            pred_target_color = self.color_network(encodings[-1])
+        else:
+            assert not(self.is_goal_image and not self.is_obs_image) # cannot have goal img but obs state
+            
+            x = self.enc_obs(obs) if self.is_obs_image else obs
+            # g = self.enc(goal) if self.is_goal_image else goal
+            mlp_in = torch.cat([x, goal], -1)
+
+        pred_ac = self.mlp(mlp_in)
+        # TODO: limiting actions to -1, 1
+        pred_ac = pred_ac.tanh()
+        return pred_ac, pred_target_color
+        # return pred_ac
+
+    def training_step(self, batch):
+        ret = self.ff(batch[0], compute_loss=True)
+        self.log('train_loss_batch', ret['loss_action'])
+        self.log('train_loss_total', ret['loss'])
+        self.log('train_loss_color', ret['loss_color'])
+        return ret
+
+    def training_epoch_end(self, outputs) -> None:
+        losses = torch.stack([item['loss_action'] for item in outputs], 0)
+        self.log('train_loss_epoch', losses.mean(), prog_bar=True)
+
+    def validation_step(self, batch, batch_idx):
+        ret = self.ff(batch, compute_loss=True)
+        return ret
+
+    def validation_epoch_end(self, outputs) -> None:
+        losses = torch.stack([output['loss_action'] for output in outputs], 0)
+        color_losses = torch.stack([output['loss_color'] for output in outputs], 0)
+        self.log('valid_loss', losses.mean(), prog_bar=True)
+        self.log('valid_loss_color', color_losses.mean(), prog_bar=True)
+
+
+class GCBCv4(GCBCv3):
+
+
+    def _build_network(self):
+        self.is_obs_image = len(self.conf.obs_shape) > 1
+        self.is_goal_image = len(self.conf.goal_shape) > 1
+        h_dim = self.conf.hidden_dim
+        ac_dim = self.conf.ac_dim
+
+
+        self.image_enc_hdim = image_enc_hdim = h_dim #self.conf.goal_enc_dim
+
+        self.enc_obs = None
+        self.enc_goal = None
+        self.enc = None
+        if self.is_obs_image:
+            obs_shape = self.conf.obs_shape
+            goal_shape = self.conf.goal_shape
+
+
+            # trying out 28x28 input
+            encoder_cls = EncoderResNet if obs_shape[-1] == 64 else Encoder28
+            # encoder_cls = Encoder if obs_shape[-1] == 64 else Encoder28
+
+            if self.is_goal_image:
+                assert obs_shape[-1] == goal_shape[-1], 'Observation and goal images should be of the same W'
+                assert obs_shape[-2] == goal_shape[-2], 'Observation and goal images should be of the same H'
+                enc_in_shape = (goal_shape[0] ,) + tuple(obs_shape[1:])
+                self.enc = encoder_cls(enc_in_shape, image_enc_hdim)
+                self.n_stack = obs_shape[0] // goal_shape[0]
+                # mlp_channel_in = (1 + self.n_stack) * image_enc_hdim
+                mlp_channel_in = 2 + self.n_stack * image_enc_hdim
+        #     else:
+        #         self.enc_obs = encoder_cls(obs_shape, image_enc_hdim)
+        #         # self.enc = encoder_cls(obs_shape, h_dim)
+        #         mlp_channel_in = h_dim + self.conf.goal_shape[-1]
+        # else:
+        #     mlp_channel_in = self.conf.obs_shape[-1] + self.conf.goal_shape[-1]
+
+        # max_token_len = self.n_stack + 1
+        # self.emb_timestep = nn.Embedding(max_token_len, h_dim) # nstack + 1
+        # gpt_config = transformers.GPT2Config(
+        #     vocab_size=1,
+        #     n_embd=h_dim,
+        #     n_layer=3,
+        #     n_head=4,
+        #     n_inner=h_dim,
+        #     # reserve one extra token for cls which will be added in the model
+        #     n_positions=max_token_len,
+        # )
+
+        # self.token_in = nn.Linear(image_enc_hdim, h_dim)
+        # self.gpt = GPT2Model(gpt_config)
+        # self.decode_action = MLP(h_dim, ac_dim, h_dim, 3)
+
+        self.mlp = MLP(mlp_channel_in, ac_dim, h_dim, 3)
+        self.eef_network = MLP(2 * self.image_enc_hdim, 2, self.conf.hidden_dim, 3)
+
+        if self.conf.get('use_contrastive', False):
+            self.contra_proj = MLP(image_enc_hdim, h_dim, h_dim, n_layers=1)
+
+        self.color_network = MLP(image_enc_hdim, 3, h_dim, 3)
+
+    def ff(self, batch, compute_loss=True):
+        obs, goal, act, target_eef, goal_aug = batch
+        pred_ac, pred_eef = self(obs, goal)
+        ret = dict(pred_ac=pred_ac.detach())
+        if compute_loss:
+            loss = self.bc_loss(pred_ac, act)
+            loss_eef = self.bc_loss(pred_eef, target_eef)
+            ret['loss'] = loss + loss_eef 
+            if self.conf.get('use_contrastive', False):
+                loss_contra = self.contra_loss(goal, goal_aug)
+                ret['loss_contra'] = loss_contra.detach()
+                ret['loss'] += 0.1 * loss_contra
+
+            ret['loss_action'] = loss.detach()
+            ret['loss_eef'] = loss_eef.detach()
+
+        # if not self.training:
+
+        #     def show_batch(idx):
+        #         import matplotlib.pyplot as plt
+        #         plt.subplot(131)
+        #         plt.imshow(obs[idx, -3:].detach().cpu().permute(1, 2, 0))
+        #         plt.subplot(132)
+        #         plt.imshow(goal[idx].detach().cpu().permute(1, 2, 0))
+        #         plt.subplot(133)
+        #         plt.imshow(goal_aug[idx].detach().cpu().permute(1, 2, 0))
+        #         plt.savefig('in_training_eef.png')
+        #         print(pred_ac[idx])
+        #         print(pred_eef[idx])
+
+        #     show_batch(0)
+        #     breakpoint()
+
+        return ret
+
+    def contra_loss(self, goal, goal_aug):
+        x = self.enc(goal)
+        x_aug = self.enc(goal_aug)
+
+        z = self.contra_proj(x)
+        z_aug = self.contra_proj(x_aug)
+        loss = ContrastiveLossELI5(x.shape[0])(z, z_aug)
+
+        return loss
+
+    def forward(self, obs, goal):
+
+        self._check_obs_and_goal(obs, goal)
+
+        if self.is_obs_image and self.is_goal_image:
+            # enc_in = torch.cat([obs, goal], dim=1) # cat dim = C
+            # mlp_in = self.enc(enc_in)
+            # mlp_in = torch.cat([self.enc_obs(obs), self.enc_goal(goal)], -1)
+
+            # mlp_in = torch.cat([self.enc(obs), self.enc(goal)], -1)
+            obses = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
+            encodings = [self.enc(x) for x in obses + [goal]]
+            # catenate current obs and goal encodings
+            pred_eef = self.eef_network(torch.cat([encodings[-2], encodings[-1]], -1))
+            pred_eef = pred_eef.tanh()
+        # else:
+        #     assert not(self.is_goal_image and not self.is_obs_image) # cannot have goal img but obs state
+            
+        #     x = self.enc_obs(obs) if self.is_obs_image else obs
+        #     # g = self.enc(goal) if self.is_goal_image else goal
+        #     mlp_in = torch.cat([x, goal], -1)
+
+        # mlp_in = torch.cat(encodings, -1)
+        mlp_in = torch.cat(encodings[:-1] + [pred_eef], -1)
+        pred_ac = self.mlp(mlp_in)
+        # TODO: limiting actions to -1, 1
+
+        # # contextualize the encodings
+        # encodings = torch.stack(encodings, 1) # B, T, h
+        # B, T, _ = encodings.size()
+        # timesteps = torch.arange(T).to(device=encodings.device, dtype=torch.long)
+        # encodings_ordered = self.token_in(encodings) + self.emb_timestep(timesteps)
+        # tf_output = self.gpt(inputs_embeds=encodings_ordered, output_attentions=True)
+        # pred_ac = self.decode_action(tf_output['last_hidden_state'][:, -1])
+
+        pred_ac = pred_ac.tanh()
+
+        return pred_ac, pred_eef
+
+    def training_step(self, batch):
+        ret = self.ff(batch[0], compute_loss=True)
+        self.log('train_loss_batch', ret['loss_action'])
+        self.log('train_loss_total', ret['loss'])
+        self.log('train_loss_eef', ret['loss_eef'])
+        # self.log('train_loss_contra', ret['loss_contra'])
+        return ret
+
+
+    def validation_epoch_end(self, outputs) -> None:
+        losses = torch.stack([output['loss_action'] for output in outputs], 0)
+        eef_losses = torch.stack([output['loss_eef'] for output in outputs], 0)
+        # contra_losses = torch.stack([output['loss_contra'] for output in outputs], 0)
+        self.log('valid_loss', losses.mean(), prog_bar=True)
+        self.log('valid_loss_eef', eef_losses.mean(), prog_bar=True)
+        # self.log('valid_loss_contra', contra_losses.mean(), prog_bar=True)
+
+
+class GCBCv5(BaseLightningModule):
+
+    enc_cls = {
+        'normal': Encoder,
+        'resnet': EncoderResNet,
+        'normal_bnorm': EncoderWithBnorm,
+    }
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    def _check_obs_and_goal(self, obs, goal):
+        assert obs.shape[1:] == self.conf.obs_shape, 'observation shape is not correct.'
+        assert goal.shape[1:] == self.conf.goal_shape, 'goal shape is not correct.'
+
+    def _build_network(self):
+        self.is_obs_image = len(self.conf.obs_shape) > 1
+        self.is_goal_image = len(self.conf.goal_shape) > 1
+        h_dim = self.conf.hidden_dim
+        ac_dim = self.conf.ac_dim
+
+        ctrl_net_nlayers = self.conf.get('ctrl_net_nlayers', 3)
+        self.image_enc_hdim = image_enc_hdim = self.conf.goal_enc_dim
+
+        self.enc = None
+        if self.is_obs_image:
+            obs_shape = self.conf.obs_shape
+            goal_shape = self.conf.goal_shape
+            enc_type = self.conf.get('enc_type', 'normal')
+            enc_cls = self.enc_cls[enc_type]
+
+            if self.is_goal_image:
+                assert obs_shape[-1] == goal_shape[-1], 'Observation and goal images should be of the same W'
+                assert obs_shape[-2] == goal_shape[-2], 'Observation and goal images should be of the same H'
+                enc_in_shape = (goal_shape[0] ,) + tuple(obs_shape[1:])
+                self.enc = enc_cls(enc_in_shape, image_enc_hdim)
+                self.n_stack = obs_shape[0] // goal_shape[0]
+                mlp_channel_in = (1 + self.n_stack) * image_enc_hdim
+            else:
+                self.enc = enc_cls(obs_shape, image_enc_hdim)
+                mlp_channel_in = h_dim + self.conf.goal_shape[-1]
+        else:
+            mlp_channel_in = self.conf.obs_shape[-1] + self.conf.goal_shape[-1]
+
+        self.ctrl_net = MLP(mlp_channel_in, ac_dim, h_dim, ctrl_net_nlayers)
+
+        if self.conf.get('use_target_color_loss', False):
+            # color_dim = 3
+            self.color_net = MLP(image_enc_hdim, 3, h_dim, 3)
+
+        if self.conf.get('use_target_eef_loss', False):
+            # eef_dim = 2
+            self.eef_net = MLP(2 * image_enc_hdim, 2, h_dim, 3)
+
+        if self.conf.get('use_contrastive_loss', False):
+            # projection head
+            self.contra_proj = MLP(image_enc_hdim, h_dim, h_dim, n_layers=1)
+        
+
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+
+        if self.conf.get('use_huber_loss', False):
+            loss = nn.HuberLoss(delta=0.05)(pred_ac, target_ac)
+        else:
+            loss = nn.MSELoss()(pred_ac, target_ac)
+        
+        return loss
+
+    def contra_loss(self, x, x_aug):
+
+        z = self.contra_proj(x)
+        z_aug = self.contra_proj(x_aug)
+        loss = ContrastiveLossELI5(x.shape[0])(z, z_aug)
+
+        return loss
+
+    def ff(self, batch, compute_loss=True):
+        act = batch['action']
+
+        enc_dict = self.get_enc(dict(obs=batch['obs'], goal=batch['goal'], goal_aug=batch['goal_aug']))
+        pred_ac = self._get_action(enc_dict['obs'], enc_dict['goal'])
+        
+        ret = dict(loss=None)
+        # loss_action for comparison purposes is always MSE, but bc loss could for example be HuberLoss
+        loss_action = nn.MSELoss()(pred_ac, act)
+        loss = self.bc_loss(pred_ac, act)
+        ret.update(loss_action=loss_action.detach(), pred_ac=pred_ac.detach())
+        
+        # aux. loss: prediction of target_color based on goal enc
+        if self.conf.get('use_target_color_loss', False):
+            pred_color = self._get_target_color(enc_dict['goal'])
+            loss_color = nn.MSELoss()(pred_color, batch['target_color'])
+            ret.update(loss_color=loss_color.detach(), pred_color=pred_color.detach())
+            loss += self.conf.use_target_color_loss * loss_color
+        
+        # aux. loss: prediction of target_eef position based on goal and obs enc.
+        if self.conf.get('use_target_eef_loss', False):
+            pred_eef = self._get_eef(enc_dict['obs'][:, -1], enc_dict['goal'])
+            loss_eef = nn.MSELoss()(pred_eef, batch['target_eef'])
+            ret.update(loss_eef=loss_eef.detach(), pred_eef=pred_eef.detach())
+            loss += self.conf.use_target_eef_loss * loss_eef
+
+        # aux. loss: contrastive loss for supervising the goal embedding (goal and goal_aug)
+        if self.conf.get('use_contrastive_loss', False):
+            contra_loss = self.contra_loss(enc_dict['goal'], enc_dict['goal_aug'])
+            ret.update(loss_contra=contra_loss.detach())
+            loss += self.conf.use_contrastive_loss * contra_loss
+
+        if compute_loss:
+            ret.update(loss=loss)
+        
+        # if self.training:
+        #     import matplotlib.pyplot as plt
+        #     def plot(idx):
+        #         _, axes = plt.subplots(1, self.n_stack+1)
+        #         axes = axes.flatten()
+        #         for i in range(self.n_stack):
+        #             axes[i].imshow(obs[idx, i*3:i*3+3].detach().cpu().permute(1,2,0))
+        #         axes[-1].imshow(goal[idx].detach().cpu().permute(1,2,0))
+        #         plt.tight_layout()
+        #         plt.savefig('in_training_eef.png')
+        #     plot(0)
+        #     breakpoint()
+        
+        return ret
+
+    def get_enc(self, batch):
+        obs = batch['obs']
+        goal = batch['goal']
+        self._check_obs_and_goal(obs, goal)
+
+        B, C, H, W = obs.shape
+
+        if self.is_obs_image:
+            y = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
+            x = einops.rearrange(y, 'i B C H W -> (B i) C H W')
+            obs_emb = self.enc(x).view(B, self.n_stack, -1).contiguous() # B, N, D
+        else:
+            obs_emb = obs
+
+        ret = dict(obs=obs_emb)
+        # goal / goal augmented
+        for key in batch:
+            ret[key] = self.enc(batch[key]) if self.is_goal_image else batch[key]
+        return ret
+
+    def get_action(self, obs, goal):
+        B, C, H, W = obs.size()
+        enc_dict = self.get_enc(dict(obs=obs, goal=goal))
+        pred_ac = self._get_action(enc_dict['obs'], enc_dict['goal'])
+        return pred_ac
+
+    def log_ret_dict(self, dictionary, step: str = 'train', is_batch: bool = True, **kwargs) -> None:
+        suf = 'batch' if is_batch else 'epoch'
+        for key in dictionary:
+            if key.startswith('loss'):
+                prog_bar = not is_batch and key == 'loss'
+                self.log(f'{step}_{key}_{suf}', dictionary[key], prog_bar=prog_bar ,**kwargs)
+
+    def log_ret_epoch(self, outputs, step: str = 'train', **kwargs):
+        metric_vals = defaultdict(list)
+        for output in outputs:
+            for key in output:
+                if key.startswith('loss'):
+                    metric_vals[key].append(output[key])
+        metric_vals = {k: torch.stack(v, 0).mean() for k, v in metric_vals.items()}
+        self.log_ret_dict(metric_vals, step, is_batch=False, **kwargs)
+
+    def training_step(self, batch):
+        ret = self.ff(batch[0], compute_loss=True)
+        self.log_ret_dict(ret, step='train', is_batch=True)
+        return ret
+        
+    def training_epoch_end(self, outputs) -> None:
+        self.log_ret_epoch(outputs, 'train')
+
+    def validation_step(self, batch, batch_idx):
+        ret = self.ff(batch, compute_loss=True)
+        return ret
+
+    def validation_epoch_end(self, outputs) -> None:
+        self.log_ret_epoch(outputs, 'valid')
+
+    def _get_action(self, obs_emb, goal_emb):
+        B, N, D = obs_emb.size()
+        mlp_in = torch.cat([obs_emb.view(B, -1).contiguous(), goal_emb], -1)
+        pred_ac = self.ctrl_net(mlp_in)
+        pred_ac = pred_ac.tanh()
+
+        return pred_ac
+
+    def _get_eef(self, obs_emb, goal_emb):
+        B, D = obs_emb.size()
+        mlp_in = torch.cat([obs_emb, goal_emb], -1)
+        pred_eef = self.eef_net(mlp_in)
+        pred_eef = pred_eef.tanh()
+        return pred_eef
+
+    def _get_target_color(self, goal_emb):
+        pred_colors = self.color_net(goal_emb)
+        pred_colors = pred_colors.tanh()
+        return pred_colors
 
 
 class GCBC(BC):
@@ -1134,6 +1761,44 @@ class TOsilv1(BaseLightningModule):
         return ret
 
 
+
+@dataclasses.dataclass
+class CUBE:
+    ind: int
+    pos: slice
+    color: slice
+
+@dataclasses.dataclass
+class EEF:
+    pos: slice
+
+def get_goal_color(state):
+    # accepts batched input
+    # inds of state that correspond to each cube
+    CUBES = [
+        CUBE(0, slice(8, 10), slice(10, 13)),
+        CUBE(1, slice(13, 15), slice(15, 18)),
+        CUBE(2, slice(18, 20), slice(20, 23)),
+    ]
+    eef = EEF(slice(4, 6))
+
+    cube_colors = torch.stack([state[:, cube.color] for cube in CUBES], 1)
+    cube_poses = torch.stack([state[:, cube.pos] for cube in CUBES], 1)
+    eef_pos = state[:, eef.pos][:, None, :]
+    
+    dists = ((cube_poses - eef_pos)**2).sum(-1)
+    target_cube_ind = dists.argmin(-1)
+    target_color = cube_colors[torch.arange(eef_pos.shape[0]), target_cube_ind]
+    info = {
+        'eef_pos': eef_pos,
+        'cube_poses': cube_poses,
+        'cube_colors': cube_colors,
+        'dists': dists,
+        'argmin': target_cube_ind,
+        'color': target_color,
+    }
+    return target_color, info
+
 class ContrastiveLossELI5(nn.Module):
     def __init__(self, batch_size, temperature=0.5, verbose=False):
         super().__init__()
@@ -1148,6 +1813,9 @@ class ContrastiveLossELI5(nn.Module):
         """
         z_i = F.normalize(emb_i, dim=1)
         z_j = F.normalize(emb_j, dim=1)
+
+        # z_i = emb_i
+        # z_j = emb_j
 
         representations = torch.cat([z_i, z_j], dim=0)
         similarity_matrix = F.cosine_similarity(representations.unsqueeze(1), representations.unsqueeze(0), dim=2)
@@ -1177,6 +1845,159 @@ class ContrastiveLossELI5(nn.Module):
         for k in range(0, N):
             loss += l_ij(k, k + N) + l_ij(k + N, k)
         return 1.0 / (2*N) * loss
+
+
+class TOsilv1DebugReacher(BaseLightningModule):
+
+    def _build_network(self):
+        # enc_config = utils.ParamDict(
+        #     hidden_dim=self.conf.hidden_dim,
+        #     obs_shape=(self.conf.obs_dim, ),
+        #     ac_dim=self.conf.ac_dim,
+        #     max_ep_len=self.conf.max_ep_len,
+        # )
+        # self.encoder = TrajBERT(enc_config)
+        # self.goal_dim = self.conf.goal_dim
+        # self.goal_emb = nn.Linear(self.conf.hidden_dim, self.goal_dim)
+
+        obs_dim = self.conf.obs_dim
+        h_dim = self.conf.hidden_dim
+        goal_dim = self.conf.goal_dim
+        self.encoder = nn.Sequential(
+            nn.Linear(obs_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, h_dim),
+            nn.ReLU(),
+            nn.Linear(h_dim, goal_dim)
+        )
+
+        self.use_gpt_decoder = self.conf.get('use_gpt_decoder', False)
+        if self.use_gpt_decoder:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_shape=(self.conf.obs_dim, ),
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+                max_ep_len=self.conf.max_ep_len,
+            )
+            self.decoder = GCTrajGPT(dec_config)
+        else:
+            dec_config = utils.ParamDict(
+                hidden_dim=self.conf.hidden_dim,
+                obs_dim=self.conf.obs_dim,
+                ac_dim=self.conf.ac_dim,
+                goal_dim=self.conf.goal_dim,
+            )
+
+            self.decoder = GCBCv2(dec_config)
+
+        self.grid2spher_proj = MLP(3, goal_dim, 128, 3, nn.Tanh())
+
+
+    def get_task_emb(self, context_s, context_a, context_mask):
+        # enc_output = self.encoder(context_s, context_a, context_mask)
+        # hstate = enc_output.last_hidden_state[:, 0]
+        # task_emb = self.goal_emb(hstate)
+        # B = context_s.shape[0]
+        # inds = context_mask.sum(-1) - 1
+        last_states = context_s[:, -1]
+        task_emb = self.encoder(last_states)
+        return task_emb
+
+    def ff(self, batch, compute_loss=True):
+        context_s       = batch['context_s']
+        context_a       = batch['context_a']
+        context_mask    = batch['attention_mask']
+
+        B = context_s.shape[0]
+
+        #### TODO: remove
+        if 'context_class_id' in batch:
+            class_acc = (batch['context_class_id'] == batch['target_class_id']).float().mean()
+            self.log('class_acc', class_acc, prog_bar=True)
+
+        # shape B,
+        # task_emb = self.get_task_emb(context_s, context_a, context_mask)
+        task_goal_color, _ = get_goal_color(context_s[:, -1])
+
+        color_vector = self.grid2spher_proj(task_goal_color.detach())
+        color_vector = F.normalize(color_vector, -1)
+
+        loss_proj = ContrastiveLossELI5(B)(color_vector, color_vector)
+
+        # (B, 1, D) x (B, D, 1) = (B, 1, 1)
+        # inner_prod = torch.bmm(color_vector.unsqueeze(1), task_emb.unsqueeze(-1))
+        # loss_fit = -inner_prod.mean()
+
+
+        # try to fit the goal color directly / contrastively
+        # target_s_enc    = batch['target_s_enc']
+        # target_a_enc    = batch['target_a_enc']
+        # target_mask_enc = batch['target_mask_enc']
+        # target_emb = self.get_task_emb(target_s_enc, target_a_enc, target_mask_enc)
+
+        # target_goal_color, _ = get_goal_color(target_s_enc[:, -1])
+        # similar_flag = torch.all(task_goal_color.repeat(B, 1, 1).transpose(0, 1) == target_goal_color.repeat(B, 1, 1), -1)
+
+        # task_emb_norm = task_emb / (task_emb**2).sum(-1, keepdim=True)**0.5
+        # target_emb_norm = target_emb / (target_emb**2).sum(-1, keepdim=True)**0.5
+        # # task_emb_norm = task_emb 
+        # # target_emb_norm = target_emb
+        # # target_emb_norm = target_emb_norm.detach() # detach to stabilize training
+        # logits = task_emb_norm @ target_emb_norm.T
+        # logits = (logits - logits.mean(-1, keepdim=True)) / logits.std(-1, keepdim=True)
+        # # contrastive_logits = contrastive_logits - contrastive_logits.max(-1, keepdim=True)[0] # subtract the mean
+        # # contrastive_logits = contrastive_logits - contrastive_logits.mean(-1, keepdim=True) # subtract the mean
+        
+        # loss_colors = nn.BCEWithLogitsLoss()(logits, similar_flag.float())
+        # target_emb = target_emb.detach()
+        # cosine similarity
+        # task_emb_norm   = F.normalize(task_emb, dim=-1)
+        # target_emb_norm = F.normalize(target_emb, dim=-1)
+        # l1 = task_emb_norm @ target_emb_norm.T
+        # l2 = target_emb_norm @ task_emb_norm.T
+        # l1 -= l1.mean(-1, keepdim=True)
+        # l2 -= l2.mean(-1, keepdim=True)
+        # euclidean similarity
+        # contrastive_dist = task_emb.repeat(B, 1, 1).transpose(0, 1) - target_emb.repeat(B, 1, 1).detach()
+        # contrastive_logits = -(contrastive_dist**2).sum(-1)**0.5
+        # contrastive_logits = contrastive_logits - contrastive_logits.max(-1, keepdim=True)[0]
+        # divide by a temprature norm for sharpening
+        # contrastive_logits /= 0.1
+
+        # labels = torch.arange(B).to(task_emb).long()
+        # loss_colors = nn.CrossEntropyLoss()(contrastive_logits, labels)
+        # loss_colors = 0.5 * (nn.CrossEntropyLoss()(l1, labels) + nn.CrossEntropyLoss()(l2, labels))
+        # goal_colors, _ = get_goal_color(context_s[:, -1])
+        # loss_colors = nn.MSELoss()(goal_colors, task_emb)
+        # loss_colors = ContrastiveLossELI5(B)(task_emb, )
+        # loss_colors = ContrastiveLossELI5(B)(task_emb, task_emb)
+
+        # if self.use_gpt_decoder:
+        #     # shape B, T
+        #     target_s    = batch['target_s']
+        #     target_a    = batch['target_a']
+        #     target_mask = batch['target_mask']
+        #     ret = self.decoder.ff(target_s, target_a, target_mask, task_emb, compute_loss=compute_loss)
+        # else:
+        #     target_s    = batch['target_s']
+        #     target_a    = batch['target_a']
+        #     ptr         = batch['ptr']
+
+        #     task_emb_broadcasted = torch.repeat_interleave(task_emb, ptr, dim=0)
+        #     ret = self.decoder.ff((target_s, task_emb_broadcasted, target_a), compute_loss=compute_loss)
+
+        ret = {}
+        # ret['loss_bc'] = ret['loss'].clone()
+        # ret['loss_colors'] = loss_colors
+        # ret['loss'] += loss_colors
+        # ret['loss'] = loss_colors
+        ret['loss'] = loss_proj
+        return ret
 
 
 class TOsilSemisupervised(TOsilv1):

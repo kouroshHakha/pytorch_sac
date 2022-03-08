@@ -76,6 +76,11 @@ class ReacherMILEnv(mujoco_env.MujocoEnv, utils.EzPickle):
 
         mujoco_env.MujocoEnv.__init__(self, self.xml_paths[self.xml_idx], 5)
 
+        # pushing the cubes down so the don't occlude the arm
+        self.sim.model.body_pos[-3:, -1] = 0.05 # make cubes elevated 
+        self.sim.model.geom_size[-3:, :2] = np.ones(2)*0.05 # make cubes larger in xy
+        self.sim.forward()
+
         self.target_idx = np.where(self.cube_order == 2)[0][0]
 
     def get_xml(self):
@@ -141,13 +146,6 @@ class ReacherMILEnv(mujoco_env.MujocoEnv, utils.EzPickle):
         self.consecutive_steps = 0
         return self._get_obs()
     
-    def get_current_image_obs(self):
-        image = self.viewer.get_image()
-        pil_image = Image.frombytes('RGB', (image[1], image[2]), image[0])
-        pil_image = pil_image.resize((128, 128), Image.ANTIALIAS)
-        image = np.flipud(np.array(pil_image))
-        return image
-
     def _get_obs(self):
         return np.concatenate([
             self.data.qpos.flat[:2],

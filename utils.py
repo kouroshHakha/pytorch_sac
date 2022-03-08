@@ -20,10 +20,25 @@ import numpy as np
 from numbers import Number
 
 from PIL import Image
+import imageio
 
+import matplotlib.pyplot as plt
 
 PathLike = Union[str, Path]
 yaml = YAML(typ='safe')
+
+def gif_to_tensor_image(gif_file):
+    gif_obj = imageio.read(gif_file, pilmode='RGB')
+
+    np_frames = []
+    for frame in gif_obj:
+        pil_image = Image.fromarray(frame)
+        pil_image = pil_image.resize((64, 64), Image.ANTIALIAS)
+        np_frames.append(np.array(pil_image))
+    
+    torch_frames = torch.from_numpy(np.stack(np_frames, 0))
+    return torch_frames
+
 
 def save_as_gif(imgs: List[np.ndarray], name: str) -> None:
     imgs_list = [Image.fromarray(img.astype(np.uint8)) for img in imgs]
@@ -35,6 +50,26 @@ def save_as_gif(imgs: List[np.ndarray], name: str) -> None:
         duration=100,
         loop=0,
     )
+
+
+# def stack_frames(frames, num_stacks=1):
+#     padding_shape = (num_stacks-1,) + frames.shape[1:]
+#     frames = torch.cat([torch.zeros(padding_shape, device=frames.device), frames], 0)
+#     # N, C, H, W or N, H, W, C
+#     separated_frames = [list(frames[i-num_stacks+1:i+1]) for i in range(num_stacks-1, len(frames))]
+#     multi_channel_frames = [torch.cat(stack_of_frames, 0) for stack_of_frames in separated_frames]
+#     return torch.stack(multi_channel_frames, 0)
+
+def stack_frames(frames, num_stacks=1):
+    # assumes input torch shape of (T, C, H, W)
+    padding_shape = (num_stacks - 1,) + frames.shape[1:]
+    frames = torch.cat([torch.zeros(padding_shape, device=frames.device), frames], 0)
+    assert frames.is_contiguous()
+
+    st, sc, sh, sw = frames.stride()
+    t, c, h, w = frames.size()
+    stacked_frames = frames.as_strided(size=(t-num_stacks+1, num_stacks * c, h, w), stride=(st, sc, sh, sw))
+    return stacked_frames
 
 def read_yaml(fname: Union[str, Path]) -> Any:
     """Read the given file using YAML.

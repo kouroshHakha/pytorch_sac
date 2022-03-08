@@ -361,6 +361,14 @@ def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None, pad_tar
 
             used_keys.add(key)
 
+        # added for testing the contrastive idea
+        elif key.startswith(('target_s_enc', 'target_a_enc')):
+            ret[key], attn_mask = pad_tokens(batch, key, padding)
+            if 'target_mask_enc' not in ret and attn_mask is not None:
+                # makes sure we only create attn_mask once based on c_s or c_a
+                ret['target_mask_enc'] = attn_mask
+            used_keys.add(key)
+
         elif key.startswith(('target_s', 'target_a')):
             if pad_targets:
                 ret[key], attn = pad_tokens(batch, key, padding)

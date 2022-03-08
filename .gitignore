@@ -29,6 +29,9 @@ wandb
 # data for maze2d
 maze2d-*_osil*
 reacher_7dof-v1_osil_dataset*
-robosuite_*_data
+reacher_2d_t*
+mil_data
+
+robosuite_pick_place_osil_data*
 
 *.tar.gz
