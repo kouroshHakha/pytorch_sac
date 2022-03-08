@@ -50,6 +50,14 @@ CUDA_VISIBLE_DEVICES=5 taskset -c 21-24 python /projects/dm_sac/quick_test_scrip
 CUDA_VISIBLE_DEVICES=6 taskset -c 25-28 python /projects/dm_sac/quick_test_scripts/train_gcbcv5_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --num_shots -1 -wb --image --stack_frame 1 --start_eval_after 5000 --run_name v5_ns_max_stack+1
 CUDA_VISIBLE_DEVICES=7 taskset -c 29-32 python /projects/dm_sac/quick_test_scripts/train_gcbcv5_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --num_shots -1 -wb --image --stack_frame 2 --start_eval_after 5000 --run_name v5_ns_max_stack+2
 
+# after the first run
+CUDA_VISIBLE_DEVICES=0 taskset -c 1-4 python /projects/dm_sac/quick_test_scripts/train_gcbcv5_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --num_shots -1 -wb --image --stack_frame 4 --start_eval_after 5000 --use_huber_loss --enc_type normal_bnorm --run_name v5_ns_max_bcloss+huber_enc+normal+bnorm 
+CUDA_VISIBLE_DEVICES=1 taskset -c 5-8 python /projects/dm_sac/quick_test_scripts/train_gcbcv5_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --num_shots -1 -wb --image --stack_frame 4 --start_eval_after 5000 --use_huber_loss --enc_type normal --run_name v5_ns_max_bcloss+huber_enc+normal
+
+# debug the resnet slowness
+CUDA_VISIBLE_DEVICES=4 taskset -c 9-12 python /projects/dm_sac/quick_test_scripts/train_gcbcv5_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --num_shots -1 -wb --image --stack_frame 4 --start_eval_after 5000 --use_target_color_loss 1.0 --run_name v5_ns_max_auxloss+color --resume --ckpt wandb_logs/osil/rgfedw3i/checkpoints/last.ckpt
+
+
 # # different task sizes
 # CUDA_VISIBLE_DEVICES=1  python quick_test_scripts/train_gcbcv2_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --task_size 1000 -wb --run_name ntask_1k
 # CUDA_VISIBLE_DEVICES=1  python quick_test_scripts/train_gcbcv2_reacher_2d.py -bs 1024 --lr 1e-3 --max_steps 100000 --task_size  500 -wb --run_name ntask_500

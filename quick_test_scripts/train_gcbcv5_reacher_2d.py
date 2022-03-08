@@ -201,19 +201,19 @@ def main(pargs):
 
     # # testing the evaluator
     # test_evaluator = evaluator_cls(
-    #     ParamDict(max_eval_episodes=10, env_name='Reacher2DTest-v1', max_render=10, verbose=True),
-    #     test_dataset, output_dir='./test_reacher2d_gcbc', mode='test',
+    #     ParamDict(max_eval_episodes=1, env_name='Reacher2D-v1', is_image=pargs.image),
+    #     train_dataset, mode='train'
     # )
 
     # test_evaluator.eval(agent)
 
-    # # testing the loss computation
+    # testing the loss computation
     # agent.train()
     # losses = []
     # for batch in tqdm.tqdm(tloader):
     #     batch = {k: v.to(agent.device) for k, v in batch.items()}
-    #     ret = agent.ff(batch, compute_loss=True)
-    #     breakpoint()
+    #     ret = agent.training_step([batch])
+    #     ret['loss'].backward()
     #     losses.append(ret['loss'].item())
     # print(f'At intialization loss = {np.mean(losses)}')
     # breakpoint()
