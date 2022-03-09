@@ -300,9 +300,9 @@ def main(pargs):
             warnings.warn(f'Checkpoint is given for evaluation, but evaluation path is not determined. Using {eval_output_dir} by default')
     
 
-    conf = ParamDict(max_eval_episodes=10, max_render=10, verbose=True, env_name='Reacher2D-v1', is_image=pargs.image)
+    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2D-v1', is_image=pargs.image)
     evaluator_cls(conf, train_dataset, eval_output_dir, mode='train').eval(agent)
-    conf = ParamDict(max_eval_episodes=10, max_render=10, verbose=True, env_name='Reacher2DTest-v1', is_image=pargs.image)
+    conf = ParamDict(max_eval_episodes=100, max_render=10, verbose=True, env_name='Reacher2DTest-v1', is_image=pargs.image)
     evaluator_cls(conf, test_dataset, eval_output_dir, mode='test').eval(agent)
 
     # # testing the eef xy prediction
