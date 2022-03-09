@@ -858,6 +858,45 @@ class GCBCv5(BaseLightningModule):
 
 
 
+class Reacher2dCtrlNet(nn.Module):
+
+    def __init__(self, obs_shape, hidden_dim, img_enc_dim, n_stack) -> None:
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.img_enc = img_enc_dim
+        self.n_stack = n_stack
+        self.obs_shape = obs_shape
+        self.enc = EncoderWithBnorm(obs_shape=self.obs_shape, h_dim=self.img_enc)
+        self.eef_network = MLP(
+            in_channel=2 + self.n_stack * self.img_enc, 
+            out_channel=2,
+            hidden_dim=self.hidden_dim , 
+            n_layers=3
+        )
+
+
+    def forward(self, batch, compute_loss=True):
+        
+        obs = batch['obs']
+        B = obs.shape[0]
+        y = [obs[:, i*3:i*3+3] for i in range(self.n_stack)]
+        x = einops.rearrange(y, 'i B C H W -> (B i) C H W').contiguous()
+        obs_emb = self.enc(x).view(B, self.n_stack, -1) # B, N, D
+
+        eef_in = torch.cat([batch['target_eef'], obs_emb.view(B, -1)], -1)
+        pred_ac = self.eef_network(eef_in)
+        ret = dict(pred_ac=pred_ac.detach())
+        if compute_loss:
+            loss = nn.MSELoss()(pred_ac, batch['action'])
+            ret['loss'] = loss
+        return ret
+
+    def get_action(self, obs, target_eef):
+        batch = {'target_eef': target_eef, 'obs': obs}
+        ret = self(batch, compute_loss=False)
+        return dict(action=ret['pred_ac'])
+
+    
 class GCBCv6(GCBCv5):
 
     enc_cls = {
@@ -874,10 +913,16 @@ class GCBCv6(GCBCv5):
 
     def _build_network(self):
         super()._build_network()
+        # we already should have an image encoder object due to super()
         # this will output the eef xy location
-        self.eef_net = MLP(self.ctrl_net.in_channel, 2, self.ctrl_net.hidden_dim, 3)
+        self.eef_net = MLP(2 * self.conf.goal_enc_dim, 2, self.conf.hidden_dim, 3)
         # this will map eef to torque actions
-        self.ctrl_net = MLP(2, self.ctrl_net.out_channel, self.ctrl_net.hidden_dim, self.ctrl_net.n_layers)
+        self.ctrl_net = Reacher2dCtrlNet(
+            (3, ) + self.conf.obs_shape[1:],  # C=3, H, W
+            self.conf.hidden_dim,
+            self.conf.goal_enc_dim,
+            self.n_stack
+        )
 
 
     def bc_loss(self, pred_ac, target_ac):
@@ -896,35 +941,19 @@ class GCBCv6(GCBCv5):
         act = batch['action']
         eef = batch['target_eef']
         
-        # get the neccessary image encodings
-        use_contrastive_loss = self.conf.get('use_contrastive_loss', False)
-        enc_input = dict(obs=batch['obs'], goal=batch['goal'])
-        if use_contrastive_loss:
-            enc_input.update(goal_aug=batch['goal_aug'])
-        enc_dict = self.get_enc(enc_input)
-
-        # predict eef based on current obs (stacked) and goal image
-        pred_eef = self._get_eef(enc_dict['obs'], enc_dict['goal'])
-
-        # prediction action based on ground truth target location
-        pred_ac = self._get_action(eef)
+        output = self.get_action(batch['obs'], batch['goal'])
+        pred_eef, pred_ac = output['eef'], output['action']
         
         ret = dict(loss=None)
         # loss_action for comparison purposes is always MSE, but bc loss could for example be HuberLoss
-        loss_action = nn.MSELoss()(pred_ac, act)
         loss_eef = nn.MSELoss()(pred_eef, eef)
-        loss = self.bc_loss(pred_ac, act) + loss_eef
+        loss_action = nn.MSELoss()(pred_ac, act) # only for logging
+        loss = loss_eef
 
         ret.update(
-            loss_action=loss_action.detach(), loss_eef=loss_eef.detach(),
-            pred_ac=pred_ac.detach(), pred_eef=pred_eef.detach()
+            loss_eef=loss_eef.detach(), pred_eef=pred_eef.detach(),
+            loss_action=loss_action.detach(), pred_ac=pred_ac.detach(),
         )
-
-        # aux. loss: contrastive loss for supervising the goal embedding (goal and goal_aug)
-        if use_contrastive_loss:
-            contra_loss = self.contra_loss(enc_dict['goal'], enc_dict['goal_aug'])
-            ret.update(loss_contra=contra_loss.detach())
-            loss += use_contrastive_loss * contra_loss
 
         if compute_loss:
             ret.update(loss=loss)
@@ -933,24 +962,24 @@ class GCBCv6(GCBCv5):
 
     def get_action(self, obs, goal):
         B, C, H, W = obs.size()
-        enc_dict = self.get_enc(dict(obs=obs, goal=goal))
-        pred_eef = self._get_eef(enc_dict['obs'], enc_dict['goal'])
-        pred_ac = self._get_action(pred_eef)
+                
+        goal_emb = self.enc(goal.contiguous())
+        obs_emb = self.enc(obs[:, -3:].contiguous()) # only emb the last time step for eef prediction
+
+        pred_eef = self._get_eef(obs_emb, goal_emb)
+        pred_ac = self._get_action(obs, pred_eef)
         return dict(action=pred_ac, eef=pred_eef)
 
     def _get_eef(self, obs_emb, goal_emb, apply_tanh=True):
-        B, N, D = obs_emb.size()
-        mlp_in = torch.cat([obs_emb.view(B, -1), goal_emb], -1)
+        mlp_in = torch.cat([obs_emb, goal_emb], -1)
         pred_eef = self.eef_net(mlp_in)
         if apply_tanh:
             pred_eef = pred_eef.tanh()
 
         return pred_eef
 
-    def _get_action(self, eef, apply_tanh=True):
-        pred_ac = self.ctrl_net(eef)
-        if apply_tanh:
-            pred_ac = pred_ac.tanh()
+    def _get_action(self, obs_stack, target_eef):
+        pred_ac = self.ctrl_net.get_action(obs_stack, target_eef)['action']
         return pred_ac
 
 

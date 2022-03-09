@@ -74,6 +74,7 @@ def _parse_args():
     # parser.add_argument('--gd', '-gd', default=-1, type=int)
     # checkpoint resuming and testing
     parser.add_argument('--ckpt', type=str)
+    parser.add_argument('--ckpt_ctrl_net', type=str)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--eval_path', type=str)
     parser.add_argument('--eval_every_nsteps', default=1000, type=int)
@@ -88,7 +89,7 @@ def _parse_args():
     return parser.parse_args()
 
 def main(pargs):
-    exp_name = f'gcbcv5_reacher2d'
+    exp_name = f'gcbcv6_reacher2d'
     print(f'Running {exp_name} ...')
     pl.seed_everything(pargs.seed)
     
@@ -195,10 +196,16 @@ def main(pargs):
     resume = args_var.get('resume', False)
 
     agent = GCBCv6.load_from_checkpoint(ckpt) if ckpt else GCBCv6(config)
+
+    if pargs.ckpt_ctrl_net and not resume:
+        agent.ctrl_net.load_state_dict(torch.load(pargs.ckpt_ctrl_net, map_location=agent.device)['state_dict'])
+    
+    # freeze the eef net if the ckpt is given
+    for params in agent.eef_net.parameters():
+        params.requires_grad = False
+
     agent = agent.to(device=pargs.device)
-
     evaluator_cls = EvaluatorReacher2D_GCBC_Img if agent.is_goal_image else EvaluatorReacher2D_GCBC_State
-
 
     # # testing the evaluator
     # test_evaluator = evaluator_cls(
