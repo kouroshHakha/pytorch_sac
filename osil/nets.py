@@ -803,7 +803,7 @@ class GCBCv5(BaseLightningModule):
         B, C, H, W = obs.size()
         enc_dict = self.get_enc(dict(obs=obs, goal=goal))
         pred_ac = self._get_action(enc_dict['obs'], enc_dict['goal'])
-        return pred_ac
+        return dict(action=pred_ac)
 
     def log_ret_dict(self, dictionary, step: str = 'train', is_batch: bool = True, **kwargs) -> None:
         suf = 'batch' if is_batch else 'epoch'
@@ -855,6 +855,104 @@ class GCBCv5(BaseLightningModule):
         pred_colors = self.color_net(goal_emb)
         pred_colors = pred_colors.tanh()
         return pred_colors
+
+
+
+class GCBCv6(GCBCv5):
+
+    enc_cls = {
+        'normal': Encoder,
+        'resnet': EncoderResNet,
+        'normal_bnorm': EncoderWithBnorm,
+    }
+    def __init__(self, conf):
+        super().__init__(conf)
+
+    def _check_obs_and_goal(self, obs, goal):
+        assert obs.shape[1:] == self.conf.obs_shape, 'observation shape is not correct.'
+        assert goal.shape[1:] == self.conf.goal_shape, 'goal shape is not correct.'
+
+    def _build_network(self):
+        super()._build_network()
+        # this will output the eef xy location
+        self.eef_net = MLP(self.ctrl_net.in_channel, 2, self.ctrl_net.hidden_dim, 3)
+        # this will map eef to torque actions
+        self.ctrl_net = MLP(2, self.ctrl_net.out_channel, self.ctrl_net.hidden_dim, self.ctrl_net.n_layers)
+
+
+    def bc_loss(self, pred_ac, target_ac):
+        pred_ac = pred_ac.view(-1, pred_ac.shape[-1])
+        target_ac = target_ac.view(-1, target_ac.shape[-1])
+
+        if self.conf.get('use_huber_loss', False):
+            loss = nn.HuberLoss(delta=0.05)(pred_ac, target_ac)
+        else:
+            loss = nn.MSELoss()(pred_ac, target_ac)
+        
+        return loss
+
+
+    def ff(self, batch, compute_loss=True):
+        act = batch['action']
+        eef = batch['target_eef']
+        
+        # get the neccessary image encodings
+        use_contrastive_loss = self.conf.get('use_contrastive_loss', False)
+        enc_input = dict(obs=batch['obs'], goal=batch['goal'])
+        if use_contrastive_loss:
+            enc_input.update(goal_aug=batch['goal_aug'])
+        enc_dict = self.get_enc(enc_input)
+
+        # predict eef based on current obs (stacked) and goal image
+        pred_eef = self._get_eef(enc_dict['obs'], enc_dict['goal'])
+
+        # prediction action based on ground truth target location
+        pred_ac = self._get_action(eef)
+        
+        ret = dict(loss=None)
+        # loss_action for comparison purposes is always MSE, but bc loss could for example be HuberLoss
+        loss_action = nn.MSELoss()(pred_ac, act)
+        loss_eef = nn.MSELoss()(pred_eef, eef)
+        loss = self.bc_loss(pred_ac, act) + loss_eef
+
+        ret.update(
+            loss_action=loss_action.detach(), loss_eef=loss_eef.detach(),
+            pred_ac=pred_ac.detach(), pred_eef=pred_eef.detach()
+        )
+
+        # aux. loss: contrastive loss for supervising the goal embedding (goal and goal_aug)
+        if use_contrastive_loss:
+            contra_loss = self.contra_loss(enc_dict['goal'], enc_dict['goal_aug'])
+            ret.update(loss_contra=contra_loss.detach())
+            loss += use_contrastive_loss * contra_loss
+
+        if compute_loss:
+            ret.update(loss=loss)
+        
+        return ret
+
+    def get_action(self, obs, goal):
+        B, C, H, W = obs.size()
+        enc_dict = self.get_enc(dict(obs=obs, goal=goal))
+        pred_eef = self._get_eef(enc_dict['obs'], enc_dict['goal'])
+        pred_ac = self._get_action(pred_eef)
+        return dict(action=pred_ac, eef=pred_eef)
+
+    def _get_eef(self, obs_emb, goal_emb, apply_tanh=True):
+        B, N, D = obs_emb.size()
+        mlp_in = torch.cat([obs_emb.view(B, -1), goal_emb], -1)
+        pred_eef = self.eef_net(mlp_in)
+        if apply_tanh:
+            pred_eef = pred_eef.tanh()
+
+        return pred_eef
+
+    def _get_action(self, eef, apply_tanh=True):
+        pred_ac = self.ctrl_net(eef)
+        if apply_tanh:
+            pred_ac = pred_ac.tanh()
+        return pred_ac
+
 
 
 class GCBC(BC):
