@@ -33,7 +33,10 @@ class GCBCEvaluator(EvaluatorBase):
         state_tens = torch.as_tensor(state[None], dtype=torch.float, device=device)
         goal_tens = torch.as_tensor(goal[None], dtype=torch.float, device=device)
         # pred_ac = agent(state_tens, goal_tens)
-        pred_ac = agent.get_action(state_tens, goal_tens)
-        a = pred_ac.squeeze(0).detach().cpu().numpy()
+        output = agent.get_action(state_tens, goal_tens)
+
+        output_np = {}
+        for key in output:
+            output_np[key] = output[key].squeeze(0).detach().cpu().numpy()
         agent.train()
-        return a
+        return output_np

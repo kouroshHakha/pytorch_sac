@@ -8,7 +8,19 @@ from pathlib import Path
 import envs; import gym
 from utils import read_hdf5, write_pickle, write_yaml, save_as_gif
 from osil.evaluators import EvaluatorBase
+import cv2
+from torchvision.utils import draw_bounding_boxes
 
+
+def draw_eef_on_image(eef: np.ndarray, img: np.ndarray, hw: int):
+    eef_pos = eef.copy()
+    eef_pos[1] = -eef_pos[1] # mirror y
+    centers = ((eef_pos / 0.6 + 0.5) * hw).astype('int')
+    dw = 1
+    boxes = torch.tensor([centers[0] - dw, centers[1] - dw,  centers[0] + dw, centers[1] + dw])
+    boxes = boxes.clip_(0, hw-1)
+    img_marked = draw_bounding_boxes(torch.from_numpy(img), boxes[None], colors='white').numpy()
+    return img_marked
 
 class Reacher2DEvalBase(EvaluatorBase):
 
@@ -145,9 +157,9 @@ class Reacher2DEvalBase(EvaluatorBase):
             s_list = [s]
             for _ in demo_action: # since the ep_len is always n it makes sense to do this
                 # step through the policy
-                a = self._get_action(agent, s_list, goal)
-                if test_counter < max_render:
-                    policy_imgs.append(self._render(env))
+                # a = self._get_action(agent, s_list, goal)
+                output = self._get_action(agent, s_list, goal)
+                a = output['action']
                 ns, reward, _, _ = env.step(a)
 
                 # log
@@ -158,6 +170,14 @@ class Reacher2DEvalBase(EvaluatorBase):
 
                 if self.is_image:
                     s = self._render(env, agent.conf.obs_shape[-1], channel_first=True)
+
+                    if test_counter < max_render:
+                        # draw predicted eef if it is part of the outputs (for debugging)
+                        img = self._render(env, channel_first=True)
+                        if 'eef' in output:
+                            img = draw_eef_on_image(output['eef'], img, hw=img.shape[-1])
+                        policy_imgs.append(img.transpose(1, 2, 0))
+                        
                 s_list.append(s)
 
                 total_reward += reward
