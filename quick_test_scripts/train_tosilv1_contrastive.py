@@ -48,7 +48,6 @@ def _parse_args():
     parser.add_argument('--env_name', type=str)
     # other params
     parser.add_argument('--use_gpt_decoder', action='store_true')
-    parser.add_argument('--use_contrastive', action='store_true')
     parser.add_argument('--num_shots', '-ns', default=-1, type=int, 
                         help='number of shots per each task variation \
                             (-1 means max number of shots available in the dataset)')
@@ -137,7 +136,6 @@ def main(pargs):
         lr=pargs.lr,
         wd=pargs.weight_decay,
         use_gpt_decoder=pargs.use_gpt_decoder,
-        use_contrastive=pargs.use_contrastive,
     )
 
     args_var = vars(pargs)

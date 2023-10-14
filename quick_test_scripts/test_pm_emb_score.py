@@ -1,23 +1,24 @@
 
 import argparse
-import numpy as np
+import dataclasses
 from pathlib import Path
-from sklearn.decomposition import PCA
-import tqdm
-import matplotlib.pyplot as plt
+
+import dcargs
 import matplotlib.colors as mcolors
-
-from sklearn.manifold import TSNE
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-
-import torch
-from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
+import numpy as np
 import pytorch_lightning as pl
+import torch
+import tqdm
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from torch.utils.data import DataLoader, TensorDataset
 
-from osil.data import collate_fn_for_supervised_osil, OsilPairedDataset, SPLITS
-from osil.nets import TOsilv1, TOsilSemisupervised
+from osil.data import SPLITS, OsilPairedDataset, collate_fn_for_supervised_osil
+from osil.nets import TOsilSemisupervised, TOsilv1
 from utils import write_yaml
 
 
@@ -31,6 +32,20 @@ def _parse_args():
     parser.add_argument('--random', action='store_true')
 
     return parser.parse_args()
+
+
+@dataclasses.dataclass
+class Args:
+    """
+    Args for the script.
+    """
+    ckpt: str
+    model: str = 'osil'
+    dataset_path: str = './reacher_7dof-v1_osil_dataset_v4'
+    max_padding: str = 64
+    metric: str = "euclidean"
+    random: bool = False
+
 
 def main(pargs):
     print(f'Running embedding evalution on {pargs.ckpt} ...')
@@ -216,6 +231,27 @@ def main(pargs):
         write_yaml(output_dir / f'tr_results_{fname_suf}.yaml' if fname_suf else 'tr_results.yaml', results)
     else:
         write_yaml(output_dir / f'tr_results_cosine_{fname_suf}.yaml' if fname_suf else 'tr_results_cosine.yaml', results)
+    return results
 
 if __name__ == '__main__':
-    main(_parse_args())
+    paths = []
+    results  = []
+    for path in paths:
+        print(path)
+        a = Args(ckpt = path)
+        r = main(a)
+        print()
+        results.append(r)
+
+    names = []
+    for idx, r in enumerate(results):
+        #plots the k_list and tr_score
+        plt.plot(r['k_list'], r['tr_scores'], label = f"NS_{names[idx]}")
+    plt.legend()
+    plt.savefig("contrastive.pdf", dpi=200)
+
+
+    # main(_parse_args())
+
+    # main(_parse_args())
+    # main(_parse_args())

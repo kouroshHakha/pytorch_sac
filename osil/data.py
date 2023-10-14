@@ -378,6 +378,10 @@ def collate_fn_for_supervised_osil(batch, padding=128, ignore_keys=None, pad_tar
                 ret[key] = torch.cat([e[key].view(-1, elem[key].shape[-1]) for e in batch], 0)
                 if 'ptr' not in ret:
                     ret['ptr'] = torch.tensor([len(e[key]) for e in batch])
+
+                ret[key + "_padded"], attn = pad_tokens(batch, key, padding)
+                if 'target_mask' not in ret and attn is not None:
+                    ret['target_mask_padded'] = attn
             used_keys.add(key)
 
     for key in elem:
